@@ -20,6 +20,8 @@
 - `image_to_video_strategy` 图生视频优先适配器
 - `media.save_dir` 保存目录（相对 `data/`）
 
+> **图片尺寸**：`adapter_image_generation.size` / `adapter_image_edits.size` 为可手填文本框，支持任意尺寸（如 `1024x1024` / `2048x1152` / `4096x4096`，或 `16:9` 等比例）。最终能否真正输出该尺寸取决于上游渠道/模型支持，请按模型说明填写。
+
 ## 指令
 | 指令 | 说明 | 示例 |
 |---|---|---|
