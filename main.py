@@ -220,6 +220,19 @@ class ImageGenPlugin(Star):
         if expect == "video" and kind != "video":
             # 当期望视频但拿到图片URL时，仍按图片发送（兜底）
             logger.info(f"{task_name} 期望视频但接口返回图片，按图片发送。")
+
+        # 双容器(Docker)部署下：AstrBot 容器里的本地文件 file:// 路径
+        # NapCat 容器读不到(ENOENT)。所以只要拿到的是公网 URL，就优先 fromURL 直发，
+        # 让 NapCat 自己去 URL 拉流/拉图，跨容器不再依赖共享文件系统。
+        if isinstance(value, str) and value.startswith("http"):
+            if kind == "video":
+                return event.chain_result([Comp.Video.fromURL(url=value)])
+            # 图片直发 URL（同样规避 file:// 跨容器问题）
+            return event.image_result(value)
+
+        # 非 URL（base64 data URI / 本地路径）：落盘后用本地路径发送。
+        # 单容器部署下 file:// 可被 NapCat 读到；双容器下若仍 ENOENT，
+        # 说明该渠道没返回 URL（只给 base64），此时只能靠部署层共享卷解决。
         stem = self._stem(event)
         try:
             kind2, path = await download_to_file(
