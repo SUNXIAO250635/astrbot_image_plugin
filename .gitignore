@@ -1,0 +1,8 @@
+# 本地会话/工具状态，不属于插件
+.claude/
+.omx/
+__pycache__/
+*.pyc
+
+# 本地配置实体（由 AstrBot 运行时生成，不放仓库）
+data/
