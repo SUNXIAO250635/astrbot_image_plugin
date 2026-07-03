@@ -4,62 +4,164 @@
     "hint": "按 OpenAI 兼容风格配置。base_url 形如 https://api.x.com",
     "type": "object",
     "items": {
-      "base_url": { "description": "Base URL", "type": "string", "default": "" },
-      "api_key": { "description": "API Key", "type": "string", "default": "" },
-      "model": { "description": "模型名", "type": "string", "default": "dall-e-3" },
-      "size": { "description": "图片尺寸", "type": "string", "default": "1024x1024", "options": ["1024x1024", "1792x1024", "1024x1792", "512x512"] },
-      "n": { "description": "生成数量", "type": "int", "default": 1 }
+      "base_url": {
+        "description": "Base URL",
+        "type": "string",
+        "default": ""
+      },
+      "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "default": ""
+      },
+      "model": {
+        "description": "模型名",
+        "type": "string",
+        "default": "dall-e-3"
+      },
+      "size": {
+        "description": "图片尺寸",
+        "type": "string",
+        "default": "1024x1024",
+        "options": [
+          "1024x1024",
+          "1792x1024",
+          "1024x1792",
+          "512x512"
+        ]
+      },
+      "n": {
+        "description": "生成数量",
+        "type": "int",
+        "default": 1
+      }
     }
   },
   "adapter_image_edits": {
     "description": "图生图 / 图像编辑 / image-edits 适配器 (/images/edits)",
     "type": "object",
     "items": {
-      "base_url": { "description": "Base URL", "type": "string", "default": "" },
-      "api_key": { "description": "API Key", "type": "string", "default": "" },
-      "model": { "description": "模型名", "type": "string", "default": "gpt-image-1" },
-      "size": { "description": "输出尺寸", "type": "string", "default": "1024x1024" }
+      "base_url": {
+        "description": "Base URL",
+        "type": "string",
+        "default": ""
+      },
+      "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "default": ""
+      },
+      "model": {
+        "description": "模型名",
+        "type": "string",
+        "default": "gpt-image-1"
+      },
+      "size": {
+        "description": "输出尺寸",
+        "type": "string",
+        "default": "1024x1024"
+      }
     }
   },
   "adapter_openai_chat": {
     "description": "文生视频(走对话) / openai 适配器 (/v1/chat/completions)",
     "type": "object",
     "items": {
-      "base_url": { "description": "Base URL", "type": "string", "default": "" },
-      "api_key": { "description": "API Key", "type": "string", "default": "" },
-      "model": { "description": "模型名", "type": "string", "default": "gpt-4o" },
-      "system_prompt": { "description": "系统提示词（可空）", "type": "text", "default": "" }
+      "base_url": {
+        "description": "Base URL",
+        "type": "string",
+        "default": ""
+      },
+      "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "default": ""
+      },
+      "model": {
+        "description": "模型名",
+        "type": "string",
+        "default": "gpt-4o"
+      },
+      "system_prompt": {
+        "description": "系统提示词（可空）",
+        "type": "text",
+        "default": ""
+      }
     }
   },
   "adapter_openai_video": {
     "description": "文生视频 / openai-video 适配器 (/v1/video/generations)",
     "type": "object",
     "items": {
-      "base_url": { "description": "Base URL", "type": "string", "default": "" },
-      "api_key": { "description": "API Key", "type": "string", "default": "" },
-      "model": { "description": "模型名", "type": "string", "default": "sora" },
-      "seconds": { "description": "视频时长(秒)", "type": "int", "default": 8 }
+      "base_url": {
+        "description": "Base URL",
+        "type": "string",
+        "default": ""
+      },
+      "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "default": ""
+      },
+      "model": {
+        "description": "模型名",
+        "type": "string",
+        "default": "sora"
+      },
+      "seconds": {
+        "description": "视频时长(秒)",
+        "type": "int",
+        "default": 8
+      },
+      "poll_interval": {
+        "description": "轮询间隔(秒)",
+        "type": "float",
+        "default": 3
+      },
+      "poll_max_wait": {
+        "description": "轮询最大等待(秒)",
+        "type": "int",
+        "default": 600
+      }
     }
   },
   "video_via_strategy": {
     "description": "文生视频优先使用哪个适配器",
     "type": "string",
     "default": "openai_video",
-    "options": ["openai_video", "openai_chat"]
+    "options": [
+      "openai_video",
+      "openai_chat"
+    ]
   },
   "image_to_video_strategy": {
     "description": "图生视频优先使用哪个适配器",
     "type": "string",
     "default": "openai_video",
-    "options": ["openai_video", "image_edits"]
+    "options": [
+      "openai_video",
+      "image_edits"
+    ]
   },
   "media": {
     "description": "媒体处理",
     "type": "object",
     "items": {
-      "save_dir": { "description": "保存目录(相对 data/)", "type": "string", "default": "imagegen" },
-      "proxy": { "description": "下载代理(可空)", "type": "string", "default": "" },
-      "timeout": { "description": "HTTP 超时(秒)", "type": "int", "default": 180 }
+      "save_dir": {
+        "description": "保存目录(相对 data/)",
+        "type": "string",
+        "default": "imagegen"
+      },
+      "proxy": {
+        "description": "下载代理(可空)",
+        "type": "string",
+        "default": ""
+      },
+      "timeout": {
+        "description": "HTTP 超时(秒)",
+        "type": "int",
+        "default": 300
+      }
     }
   }
 }

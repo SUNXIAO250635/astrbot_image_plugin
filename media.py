@@ -71,6 +71,28 @@ def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
             if m:
                 return ("image" if m.group(1) == "image" else "video"), v
 
+    # 2.5) newapi 渠道视频轮询结果结构：
+    #   {"code":"success","data":{"status":"SUCCESS","result_url":"https://...mp4",
+    #     "data":{"content":{"video_url":"https://...mp4"}, ...}}}
+    data_obj = resp_json.get("data") if isinstance(resp_json.get("data"), dict) else None
+    if data_obj:
+        for key in ("result_url", "video_url", "image_url", "url"):
+            v = data_obj.get(key)
+            if isinstance(v, str) and v.startswith("http"):
+                return _kind_from_url(v), v
+        inner = data_obj.get("data") if isinstance(data_obj.get("data"), dict) else None
+        if inner:
+            content = inner.get("content") if isinstance(inner.get("content"), dict) else None
+            if content:
+                for key in ("video_url", "image_url", "url"):
+                    v = content.get(key)
+                    if isinstance(v, str) and v.startswith("http"):
+                        return _kind_from_url(v), v
+            for key in ("video_url", "image_url", "url"):
+                v = inner.get(key)
+                if isinstance(v, str) and v.startswith("http"):
+                    return _kind_from_url(v), v
+
     # 3) chat completions：从 choices[0].message.content 文本里提取 URL
     choices = resp_json.get("choices")
     if isinstance(choices, list) and choices:
@@ -135,6 +157,7 @@ async def download_to_file(
         return kind, value
 
     # HTTP 下载
+    ext = _ext_from_url(value)
     want_video = _kind_from_url(value) == "video"
     if not ext:
         ext = ".mp4" if want_video else ".png"

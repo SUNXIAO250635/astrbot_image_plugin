@@ -25,18 +25,38 @@ def _join(base_url: str, path: str) -> str:
     return f"{base}{path}"
 
 
-async def _post_json(
-    url: str, headers: dict, payload: dict, timeout: int
+async def _get_json(
+    url: str, headers: dict, timeout: int, proxy: str = ""
 ) -> dict:
+    import json as _json
+
     timeout_cfg = aiohttp.ClientTimeout(total=timeout)
-    headers = {**headers, "Content-Type": "application/json"}
+    headers = {**headers, "Accept": "application/json"}
+    proxy_kw = {"proxy": proxy} if proxy else {}
     async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-        async with session.post(url, headers=headers, json=payload) as resp:
+        async with session.get(url, headers=headers, **proxy_kw) as resp:
             text = await resp.text(errors="ignore")
             if resp.status >= 400:
                 raise ApiException(f"接口返回 {resp.status}: {text[:300]}")
-            import json as _json
+            try:
+                return _json.loads(text)
+            except Exception:
+                raise ApiException(f"响应非 JSON: {text[:300]}")
 
+
+async def _post_json(
+    url: str, headers: dict, payload: dict, timeout: int, proxy: str = ""
+) -> dict:
+    import json as _json
+
+    timeout_cfg = aiohttp.ClientTimeout(total=timeout)
+    headers = {**headers, "Content-Type": "application/json", "Accept": "application/json"}
+    proxy_kw = {"proxy": proxy} if proxy else {}
+    async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
+        async with session.post(url, headers=headers, json=payload, **proxy_kw) as resp:
+            text = await resp.text(errors="ignore")
+            if resp.status >= 400:
+                raise ApiException(f"接口返回 {resp.status}: {text[:300]}")
             try:
                 return _json.loads(text)
             except Exception:
@@ -161,43 +181,131 @@ async def openai_video(
     prompt: str,
     image_bytes: Optional[bytes] = None,
     image_filename: Optional[str] = None,
-    timeout: int = 180,
+    timeout: int = 300,
     proxy: str = "",
 ) -> dict:
     """文生视频 / 图生视频。
 
-    文生视频走 JSON；若附带图片则用 multipart(部分厂商接受 image 字段)。
+    newapi(渠道)风格：提交后返回 task_id，需要轮回 GET /v1/video/generations/{task_id}
+    直到 data.status == SUCCESS 才有视频 URL。
+    图生视频走 multipart(部分厂商接受 image 字段)。
     """
-    url = _join(cfg["base_url"], "/v1/video/generations")
+    import asyncio
+    import base64 as _b64
+    from aiohttp import FormData
 
+    submit_url = _join(cfg["base_url"], "/v1/video/generations")
     headers = _auth_headers(cfg.get("api_key", ""))
+    seconds = int(cfg.get("seconds", 8) or 8)
 
     if image_bytes is None:
+        # 文生视频：JSON
         payload = {
             "model": cfg.get("model", "sora"),
             "prompt": prompt,
-            "seconds": int(cfg.get("seconds", 8) or 8),
+            "seconds": seconds,
         }
-        return await _post_json(url, headers, payload, timeout)
+        submit_resp = await _post_json(submit_url, headers, payload, timeout, proxy)
+    else:
+        # 图生视频：multipart，带 image
+        form = FormData()
+        form.add_field("model", cfg.get("model", "sora"))
+        form.add_field("prompt", prompt)
+        form.add_field("seconds", str(seconds))
+        # 优先传 base64 image，兼容更多后端
+        try:
+            b64 = _b64.b64encode(image_bytes).decode()
+            form.add_field("image", f"data:image/png;base64,{b64}")
+            form.add_field("image_file", image_bytes,
+                           filename=image_filename or "input.png",
+                           content_type="image/png")
+        except Exception:
+            form.add_field("image", image_bytes,
+                           filename=image_filename or "input.png",
+                           content_type="image/png")
 
-    # 图生视频：multipart，带 image
-    from aiohttp import FormData
-    import json as _json
+        import json as _json
 
-    form = FormData()
-    form.add_field("model", cfg.get("model", "sora"))
-    form.add_field("prompt", prompt)
-    form.add_field("seconds", str(cfg.get("seconds", 8) or 8))
-    form.add_field("image", image_bytes, filename=image_filename or "input.png",
-                   content_type="image/png")
-    timeout_cfg = aiohttp.ClientTimeout(total=timeout)
-    proxy_kw = {"proxy": proxy} if proxy else {}
-    async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-        async with session.post(url, headers=headers, data=form, **proxy_kw) as resp:
-            text = await resp.text(errors="ignore")
-            if resp.status >= 400:
-                raise ApiException(f"接口返回 {resp.status}: {text[:300]}")
-            try:
-                return _json.loads(text)
-            except Exception:
-                raise ApiException(f"响应非 JSON: {text[:300]}")
+        timeout_cfg = aiohttp.ClientTimeout(total=timeout)
+        proxy_kw = {"proxy": proxy} if proxy else {}
+        async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
+            async with session.post(submit_url, headers=headers, data=form,
+                                    **proxy_kw) as resp:
+                text = await resp.text(errors="ignore")
+                if resp.status >= 400:
+                    raise ApiException(f"接口返回 {resp.status}: {text[:300]}")
+                try:
+                    submit_resp = _json.loads(text)
+                except Exception:
+                    raise ApiException(f"响应非 JSON: {text[:300]}")
+
+    # 提取 task_id；若提交响应里已经直接带视频/图片 URL，则视为同步完成。
+    task_id = (
+        submit_resp.get("task_id")
+        if isinstance(submit_resp, dict) else None
+    ) or (submit_resp.get("id") if isinstance(submit_resp, dict) else None)
+
+    if not task_id:
+        # 提交即完成(同步返回 media)，直接返回
+        return submit_resp
+
+    # 轮询：data.status 达到 SUCCESS/COMPLETED/video.success 即结束
+    poll_url = f"{submit_url}/{task_id}"
+    poll_interval = float(cfg.get("poll_interval", 3) or 3)
+    max_wait = max(timeout, int(cfg.get("poll_max_wait", 600) or 600))
+    deadline_poll = _now() + max_wait
+    last = submit_resp
+    while True:
+        try:
+            last = await _get_json(poll_url, headers, timeout, proxy)
+        except ApiException as e:
+            # 偶发错误不致弃任务，继续重试
+            if _now() > deadline_poll:
+                raise
+            await asyncio.sleep(max(poll_interval, 2))
+            continue
+
+        status = _video_status(last)
+        if status in ("SUCCESS", "COMPLETED", "succeeded", "success"):
+            return last
+        if status in ("FAILED", "failed", "error"):
+            reason = _video_fail_reason(last)
+            raise ApiException(f"视频生成失败: {reason or status}")
+        if _now() > deadline_poll:
+            raise ApiException(f"视频生成超时(> {max_wait}s)，最后状态: {status}")
+        await asyncio.sleep(poll_interval)
+
+
+def _video_status(resp: dict) -> str:
+    """从 newapi 视频轮询响应里提取任务状态字符串。
+
+    注意：newapi 顶层 code 恒为 'success'(表示请求成功)，任务真实状态在 data.status，
+    取值如 NOT_START / QUEUED / RUNNING / SUCCESS / FAILED。
+    """
+    if not isinstance(resp, dict):
+        return ""
+    data = resp.get("data")
+    if isinstance(data, dict):
+        s = data.get("status") or data.get("state")
+        if s:
+            return str(s)
+    # 同步 OpenAI 风格 data[0].url 已带结果
+    if isinstance(data, list) and data:
+        return "SUCCESS"
+    return str(resp.get("status") or resp.get("object") or "")
+
+
+def _video_fail_reason(resp: dict) -> str:
+    if isinstance(resp, dict):
+        data = resp.get("data")
+        if isinstance(data, dict):
+            return str(data.get("fail_reason") or data.get("error") or "")
+        return str(resp.get("error") or "")
+    return ""
+
+
+def _now() -> float:
+    import time as _t
+
+    return _t.monotonic()
+
