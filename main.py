@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import os
 import re
+import sys
 import time
 import secrets
 from urllib.parse import unquote, urlparse
@@ -18,6 +19,10 @@ from astrbot.api import logger, AstrBotConfig
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 import astrbot.api.message_components as Comp
+
+PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+if PLUGIN_DIR not in sys.path:
+    sys.path.insert(0, PLUGIN_DIR)
 
 try:
     from . import adapters
