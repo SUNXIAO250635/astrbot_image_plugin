@@ -33,27 +33,21 @@ DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT = (
 )
 
 DEFAULT_IMAGE_EDIT_PLAN_SYSTEM_PROMPT = (
-    "你是专业的多图图像编辑需求理解助手。用户会给出一段自然语言和按顺序编号的图片。"
-    "请理解“第一张图/第二张图/第三张图/第 N 张图/基底/参考/替换/保留/角色特征”等指代关系，"
-    "把需求改写成适合图生图或图片编辑模型执行的中文提示词。"
+    "你是专业的图像编辑需求理解助手。用户会给出一段自然语言，可能同时带有按顺序编号的图片。"
+    "请一次性完成意图判断、图片引用关系分析和最终图生图提示词改写。"
+    "请理解“上一张/刚才那张/第一张图/第二张图/第 N 张图/基底/参考/替换/保留/角色特征”等指代关系。"
+    "普通单图编辑可以允许使用上一张缓存；凡是用户语义上引用多张图、编号图片、参考图、基础图、替换对象、"
+    "组合/融合多个来源，都必须使用当前同一条消息里的图片，不能从聊天记录拼接。"
     "如果用户要求以某一张为基础、用其他图片替换人物或参考角色特征，提示词必须明确："
     "保留基础图的背景、构图、氛围、动作、光线和镜头关系；"
     "将基础图中的目标人物或物体按用户指定关系替换为参考图中的角色身份与外观特征，"
     "包括眼睛、脸型、发型、身材、服装、材质和显著特征；多张参考图要逐一说明用途并保持自然融合。"
     "只输出 JSON，不要 Markdown。格式："
-    "{\"prompt\":\"最终图生图提示词\",\"primary_image_index\":1,"
-    "\"reference_image_indexes\":[2,3],\"summary\":\"一句话说明理解结果\"}"
-)
-
-DEFAULT_IMAGE_EDIT_INTENT_SYSTEM_PROMPT = (
-    "你是图生图请求的意图分类器。请根据用户原始提示词和当前消息图片数量，"
-    "判断这次请求是否必须使用当前同一条消息中的图片、至少需要几张当前图片、"
-    "是否需要进入多图/复杂图像编辑规划。只输出 JSON，不要 Markdown。"
-    "字段：requires_current_images(bool), required_image_count(int), "
-    "should_plan(bool), allow_cached_single_image(bool), reason(string)。"
-    "规则：普通单图编辑可以允许使用上一张缓存；凡是用户语义上引用多张图、"
-    "编号图片、参考图、基础图、替换对象、组合/融合多个来源，"
-    "都必须使用当前同一条消息里的图片，不能从聊天记录拼接。"
+    "{\"requires_current_images\":true,\"required_image_count\":2,"
+    "\"should_plan\":true,\"allow_cached_single_image\":false,"
+    "\"prompt\":\"最终图生图提示词\",\"primary_image_index\":1,"
+    "\"reference_image_indexes\":[2,3],\"summary\":\"一句话说明理解结果\","
+    "\"reason\":\"简短原因\"}"
 )
 
 try:
@@ -64,7 +58,7 @@ except ImportError:
     from media import extract_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.5",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.6",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -133,9 +127,7 @@ class ImageGenPlugin(Star):
             event.stop_event()
             return
         current_image_items = await self._get_current_image_items(event)
-        image_intent = await self._analyze_image_edit_intent(
-            prompt, len(current_image_items)
-        )
+        image_intent = await self._plan_image_edit_once(prompt, current_image_items)
         image_ref_error = self._image_intent_error(
             image_intent, len(current_image_items)
         )
@@ -163,10 +155,12 @@ class ImageGenPlugin(Star):
             event.stop_event()
             return
         if using_cached_image:
-            prompt, prompt_notice = await self._prepare_prompt(prompt, "图生图")
+            prompt, prompt_notice, image_items = await self._prepare_planned_image_edit(
+                prompt, image_items, image_intent
+            )
         else:
-            prompt, prompt_notice, image_items = await self._prepare_image_edit(
-                prompt, image_items, bool(image_intent.get("should_plan", False))
+            prompt, prompt_notice, image_items = await self._prepare_planned_image_edit(
+                prompt, image_items, image_intent
             )
         if prompt_notice:
             yield event.plain_result(prompt_notice)
@@ -243,7 +237,7 @@ class ImageGenPlugin(Star):
 
     @property
     def _timeout(self) -> int:
-        return int((self.config.get("media", {}) or {}).get("timeout", 180) or 180)
+        return int((self.config.get("media", {}) or {}).get("timeout", 300) or 300)
 
     @property
     def _proxy(self) -> str:
@@ -402,28 +396,35 @@ class ImageGenPlugin(Star):
         )
         return enhanced, notice
 
-    async def _prepare_image_edit(
-        self, prompt: str, image_items: list, should_plan: bool = True
-    ) -> tuple:
+    async def _plan_image_edit_once(self, prompt: str, current_image_items: list) -> dict:
+        """用一次 Chat 完成图生图意图判断、图片选择和提示词规划。"""
         original = (prompt or "").strip()
-        if not image_items:
-            return original, None, image_items
-        if not should_plan:
-            enhanced, notice = await self._prepare_prompt(original, "图生图")
-            return enhanced, notice, image_items
+        fallback = self._fallback_image_edit_intent(original, len(current_image_items))
+        fallback.update({
+            "prompt": "",
+            "primary_image_index": None,
+            "reference_image_indexes": [],
+            "summary": "",
+            "chat_used": False,
+        })
+        if not self._image_edit_plan_enabled:
+            return fallback
 
         chat_cfg = self._chat_cfg_for_prompt_tools(self._image_edit_plan_system_prompt)
-        if not chat_cfg.get("base_url") or not self._image_edit_plan_enabled:
-            enhanced, notice = await self._prepare_prompt(original, "图生图")
-            return enhanced, notice, image_items
+        if not chat_cfg.get("base_url"):
+            return fallback
 
         plan_prompt = (
             f"用户原始图生图需求：{original}\n"
-            f"当前消息共有 {len(image_items)} 张图片，编号从 1 开始。"
-            "请理解图片编号指代关系，输出严格 JSON。"
+            f"当前同一条消息中附带的图片数量：{len(current_image_items)}，"
+            "如果有图片则编号从 1 开始。\n"
+            "请输出严格 JSON。字段必须包含："
+            "requires_current_images, required_image_count, should_plan, "
+            "allow_cached_single_image, prompt, primary_image_index, "
+            "reference_image_indexes, summary, reason。"
         )
-        image_bytes = [item["bytes"] for item in image_items]
-        image_names = [item["filename"] for item in image_items]
+        image_bytes = [item["bytes"] for item in current_image_items]
+        image_names = [item["filename"] for item in current_image_items]
         try:
             resp = await adapters.openai_chat(
                 chat_cfg,
@@ -435,63 +436,32 @@ class ImageGenPlugin(Star):
             )
             plan_text = self._extract_chat_text(resp)
             plan = self._extract_json_object(plan_text)
-            planned_prompt = self._clean_prompt_text(
-                plan.get("prompt") if plan else plan_text
-            )
+            if not plan and plan_text:
+                plan = {"prompt": plan_text}
+            normalized = self._normalize_image_edit_plan(plan, fallback)
+            normalized["chat_used"] = True
+            return normalized
         except Exception as e:
-            logger.warning(f"图生图自然语言理解失败，使用原提示词: {e}")
-            return original, None, image_items
+            logger.warning(f"图生图自然语言理解失败，使用兜底判断: {e}")
+            return fallback
 
-        if not planned_prompt:
-            return original, None, image_items
-
+    async def _prepare_planned_image_edit(
+        self, prompt: str, image_items: list, plan: dict
+    ) -> tuple:
+        original = (prompt or "").strip()
         selected_items = self._select_planned_images(image_items, plan)
-        notice = None
-        if self._prompt_enhance_show_prompt:
-            summary = (plan or {}).get("summary", "") if isinstance(plan, dict) else ""
-            notice = (
-                "✨ 图生图理解：\n"
-                f"{summary + chr(10) if summary else ''}"
-                f"优化后的提示词：\n{planned_prompt}"
-        )
-        return planned_prompt, notice, selected_items
+        planned_prompt = self._clean_prompt_text((plan or {}).get("prompt", ""))
+        if planned_prompt:
+            return planned_prompt, self._image_edit_plan_notice(plan, planned_prompt), selected_items
 
-    async def _analyze_image_edit_intent(
-        self, prompt: str, current_image_count: int
-    ) -> dict:
-        fallback = self._fallback_image_edit_intent(prompt, current_image_count)
-        if not self._image_edit_plan_enabled:
-            return fallback
+        if (plan or {}).get("chat_used"):
+            return original, None, selected_items
 
-        chat_cfg = self._chat_cfg_for_prompt_tools(
-            DEFAULT_IMAGE_EDIT_INTENT_SYSTEM_PROMPT
-        )
-        if not chat_cfg.get("base_url"):
-            return fallback
+        enhanced, notice = await self._prepare_prompt(original, "图生图")
+        return enhanced, notice, selected_items
 
-        analyze_prompt = (
-            f"用户原始图生图提示词：{(prompt or '').strip()}\n"
-            f"当前同一条消息中附带的图片数量：{current_image_count}\n"
-            "请判断是否需要当前消息中的多张/编号/参考图片，以及是否允许使用上一张单图缓存。"
-        )
-        try:
-            resp = await adapters.openai_chat(
-                chat_cfg,
-                analyze_prompt,
-                timeout=self._timeout,
-                proxy=self._proxy,
-            )
-            intent = self._normalize_image_edit_intent(
-                self._extract_json_object(self._extract_chat_text(resp)),
-                fallback,
-            )
-        except Exception as e:
-            logger.warning(f"图生图意图分析失败，使用兜底判断: {e}")
-            return fallback
-        return intent
-
-    def _normalize_image_edit_intent(self, intent: dict, fallback: dict) -> dict:
-        if not isinstance(intent, dict):
+    def _normalize_image_edit_plan(self, plan: dict, fallback: dict) -> dict:
+        if not isinstance(plan, dict):
             return fallback
 
         normalized = dict(fallback)
@@ -500,24 +470,81 @@ class ImageGenPlugin(Star):
             "should_plan",
             "allow_cached_single_image",
         ):
-            if key in intent:
-                normalized[key] = self._cfg_bool(intent.get(key), fallback.get(key))
+            if key in plan:
+                normalized[key] = self._cfg_bool(plan.get(key), fallback.get(key))
 
         required = self._to_positive_int(
-            intent.get("required_image_count"),
+            plan.get("required_image_count"),
             normalized.get("required_image_count", 1),
         )
-        normalized["required_image_count"] = max(1, min(self._image_edit_max_images, required))
+        normalized["required_image_count"] = max(1, min(10, required))
 
-        reason = str(intent.get("reason") or "").strip()
-        if reason:
-            normalized["reason"] = reason
+        primary = self._first_positive_index(
+            plan,
+            "primary_image_index",
+            "base_image_index",
+            "main_image_index",
+            "source_image_index",
+        )
+        if primary:
+            normalized["primary_image_index"] = primary
+
+        refs = self._first_index_list(
+            plan,
+            "reference_image_indexes",
+            "reference_images",
+            "secondary_image_indexes",
+            "selected_image_indexes",
+            "image_indexes",
+        )
+        if refs:
+            normalized["reference_image_indexes"] = refs
+            normalized["required_image_count"] = max(
+                normalized["required_image_count"], max(refs)
+            )
+        if primary:
+            normalized["required_image_count"] = max(
+                normalized["required_image_count"], primary
+            )
+
+        prompt = self._clean_prompt_text(
+            plan.get("prompt")
+            or plan.get("final_prompt")
+            or plan.get("rewritten_prompt")
+            or ""
+        )
+        if prompt and (normalized.get("should_plan") or self._prompt_enhance_enabled):
+            normalized["prompt"] = prompt
+
+        for key in ("summary", "reason"):
+            value = str(plan.get(key) or "").strip()
+            if value:
+                normalized[key] = value
+
+        fallback_required = int(fallback.get("required_image_count") or 1)
+        if fallback.get("requires_current_images") or fallback_required > 1:
+            normalized["required_image_count"] = max(
+                normalized["required_image_count"], fallback_required
+            )
+            normalized["requires_current_images"] = True
+            normalized["allow_cached_single_image"] = False
+            normalized["should_plan"] = True
 
         if normalized["required_image_count"] > 1:
             normalized["requires_current_images"] = True
             normalized["allow_cached_single_image"] = False
             normalized["should_plan"] = True
         return normalized
+
+    def _image_edit_plan_notice(self, plan: dict, planned_prompt: str) -> str:
+        if not self._prompt_enhance_show_prompt:
+            return None
+        summary = str((plan or {}).get("summary") or "").strip()
+        return (
+            "✨ 图生图理解：\n"
+            f"{summary + chr(10) if summary else ''}"
+            f"优化后的提示词：\n{planned_prompt}"
+        )
 
     def _fallback_image_edit_intent(
         self, prompt: str, current_image_count: int
@@ -529,7 +556,7 @@ class ImageGenPlugin(Star):
         requires_current = required > 1 or mentions_multi
         return {
             "requires_current_images": requires_current,
-            "required_image_count": max(1, min(self._image_edit_max_images, required)),
+            "required_image_count": max(1, min(10, required)),
             "should_plan": should_plan,
             "allow_cached_single_image": not requires_current,
             "reason": "fallback",
@@ -583,7 +610,26 @@ class ImageGenPlugin(Star):
     def _requested_image_indexes(prompt: str) -> set:
         prompt = prompt or ""
         indexes = set()
-        zh_nums = {
+        zh_nums = ImageGenPlugin._zh_image_numbers()
+        for match in re.finditer(r"第\s*(\d{1,2})\s*张", prompt, re.I):
+            indexes.add(int(match.group(1)))
+        for match in re.finditer(r"(?:图|image)\s*(\d{1,2})", prompt, re.I):
+            indexes.add(int(match.group(1)))
+        for match in re.finditer(r"(\d{1,2})\s*号\s*(?:图|图片)", prompt, re.I):
+            indexes.add(int(match.group(1)))
+        for num, index in zh_nums.items():
+            if (
+                f"第{num}张" in prompt
+                or f"第{num}张图" in prompt
+                or f"图{num}" in prompt
+                or f"{num}号图" in prompt
+            ):
+                indexes.add(index)
+        return indexes
+
+    @staticmethod
+    def _zh_image_numbers() -> dict:
+        return {
             "一": 1,
             "二": 2,
             "两": 2,
@@ -596,14 +642,6 @@ class ImageGenPlugin(Star):
             "九": 9,
             "十": 10,
         }
-        for match in re.finditer(r"第\s*(\d{1,2})\s*张", prompt, re.I):
-            indexes.add(int(match.group(1)))
-        for match in re.finditer(r"(?:图|image)\s*(\d{1,2})", prompt, re.I):
-            indexes.add(int(match.group(1)))
-        for num, index in zh_nums.items():
-            if f"第{num}张" in prompt:
-                indexes.add(index)
-        return indexes
 
     @staticmethod
     def _mentions_multi_image(prompt: str) -> bool:
@@ -645,14 +683,20 @@ class ImageGenPlugin(Star):
         primary = ImageGenPlugin._to_positive_int(plan.get("primary_image_index"))
         if primary:
             indexes.append(primary)
-        refs = plan.get("reference_image_indexes")
-        if isinstance(refs, list):
-            indexes.extend(
-                index for index in (ImageGenPlugin._to_positive_int(ref) for ref in refs)
-                if index
-            )
-        elif refs:
-            indexes.extend(ImageGenPlugin._extract_index_values(refs))
+        for key in (
+            "reference_image_indexes",
+            "selected_image_indexes",
+            "image_indexes",
+        ):
+            refs = plan.get(key)
+            if isinstance(refs, list):
+                indexes.extend(
+                    index
+                    for index in (ImageGenPlugin._to_positive_int(ref) for ref in refs)
+                    if index
+                )
+            elif refs:
+                indexes.extend(ImageGenPlugin._extract_index_values(refs))
         selected = []
         seen = set()
         for index in indexes:
@@ -673,6 +717,24 @@ class ImageGenPlugin(Star):
             return default
         number = int(match.group(0))
         return number if number > 0 else default
+
+    @staticmethod
+    def _first_positive_index(data: dict, *keys):
+        for key in keys:
+            index = ImageGenPlugin._to_positive_int(data.get(key))
+            if index:
+                return index
+        return None
+
+    @staticmethod
+    def _first_index_list(data: dict, *keys) -> list:
+        for key in keys:
+            if key not in data:
+                continue
+            indexes = ImageGenPlugin._extract_index_values(data.get(key))
+            if indexes:
+                return indexes
+        return []
 
     @staticmethod
     def _extract_index_values(value) -> list:

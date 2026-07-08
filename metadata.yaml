@@ -1,7 +1,7 @@
 name: astrbot_plugin_imagegen
 display_name: 多模态生图视频插件
 desc: 通过指令调用文生图、图生图、图生视频、文生视频，适配 image-generation / image-edits / openai chat / openai-video 四类接口。
-version: v0.1.5
+version: v0.1.6
 author: sunx
 repo: https://github.com/SUNXIAO250635/astrbot_image_plugin
 astrbot_version: ">=4.5.7"

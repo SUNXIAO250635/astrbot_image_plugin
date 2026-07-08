@@ -36,6 +36,15 @@ def _kind_from_url(url: str) -> str:
     return "image"
 
 
+def _kind_from_key_url(key: str, url: str, default: str = "") -> str:
+    key = (key or "").lower()
+    if "video" in key:
+        return "video"
+    if "image" in key:
+        return "image"
+    return default or _kind_from_url(url)
+
+
 def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
     """从各种接口的 JSON 响应里提取 (kind, value)。
 
@@ -54,9 +63,10 @@ def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
                 return _kind_from_url(item), item
             if not isinstance(item, dict):
                 continue
-            url = item.get("url") or item.get("video_url") or item.get("image_url")
-            if url:
-                return _kind_from_url(url), url
+            for key in ("video_url", "image_url", "url"):
+                url = item.get(key)
+                if isinstance(url, str) and url.startswith("http"):
+                    return _kind_from_key_url(key, url), url
             b64 = item.get("b64_json") or item.get("b64")
             if b64:
                 return "image", f"data:image/png;base64,{b64}"
@@ -65,7 +75,7 @@ def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
     for key in ("video_url", "image_url", "url", "video", "output"):
         v = resp_json.get(key)
         if isinstance(v, str) and v.startswith("http"):
-            return _kind_from_url(v), v
+            return _kind_from_key_url(key, v), v
         if isinstance(v, str) and "base64" in v:
             m = _BASE64_RE.match(v)
             if m:
@@ -79,7 +89,8 @@ def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
         for key in ("result_url", "video_url", "image_url", "url"):
             v = data_obj.get(key)
             if isinstance(v, str) and v.startswith("http"):
-                return _kind_from_url(v), v
+                default = "video" if key == "result_url" else ""
+                return _kind_from_key_url(key, v, default), v
         inner = data_obj.get("data") if isinstance(data_obj.get("data"), dict) else None
         if inner:
             content = inner.get("content") if isinstance(inner.get("content"), dict) else None
@@ -87,21 +98,38 @@ def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
                 for key in ("video_url", "image_url", "url"):
                     v = content.get(key)
                     if isinstance(v, str) and v.startswith("http"):
-                        return _kind_from_url(v), v
+                        return _kind_from_key_url(key, v), v
             for key in ("video_url", "image_url", "url"):
                 v = inner.get(key)
                 if isinstance(v, str) and v.startswith("http"):
-                    return _kind_from_url(v), v
+                    return _kind_from_key_url(key, v), v
 
     # 3) chat completions：从 choices[0].message.content 文本里提取 URL
     choices = resp_json.get("choices")
     if isinstance(choices, list) and choices:
         msg = choices[0].get("message") if isinstance(choices[0], dict) else None
         content = msg.get("content") if isinstance(msg, dict) else None
-        if isinstance(content, str):
-            return _extract_from_text(content)
+        text = _content_to_text(content)
+        if text:
+            return _extract_from_text(text)
 
     return None
+
+
+def _content_to_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        value = content.get("text") or content.get("content") or ""
+        return _content_to_text(value)
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            text = _content_to_text(item)
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    return ""
 
 
 def _extract_from_text(text: str) -> Optional[Tuple[str, str]]:
