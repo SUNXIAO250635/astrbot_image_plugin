@@ -167,7 +167,7 @@
       "prompt_chat_model": {
         "description": "提示词优化/图生图理解使用的 Chat 模型",
         "type": "string",
-        "default": "gpt-4o",
+        "default": "",
         "hint": "优先用于提示词优化和自然语言图生图理解；留空时使用 adapter_openai_chat.model。"
       },
       "prompt_enhance_enabled": {

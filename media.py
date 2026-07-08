@@ -49,6 +49,9 @@ def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
     data = resp_json.get("data")
     if isinstance(data, list):
         for item in data:
+            # 有些接口直接返回 data[0] = "https://..."
+            if isinstance(item, str) and item.startswith("http"):
+                return _kind_from_url(item), item
             if not isinstance(item, dict):
                 continue
             url = item.get("url") or item.get("video_url") or item.get("image_url")
@@ -57,9 +60,6 @@ def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
             b64 = item.get("b64_json") or item.get("b64")
             if b64:
                 return "image", f"data:image/png;base64,{b64}"
-            # 有些接口直接 data[0] = url(string)
-            if isinstance(item, str) and item.startswith("http"):
-                return _kind_from_url(item), item
 
     # 2) 顶层 url / video_url / image_url
     for key in ("video_url", "image_url", "url", "video", "output"):

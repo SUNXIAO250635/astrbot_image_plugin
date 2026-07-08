@@ -64,7 +64,7 @@ except ImportError:
     from media import extract_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.4",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.5",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -503,10 +503,10 @@ class ImageGenPlugin(Star):
             if key in intent:
                 normalized[key] = self._cfg_bool(intent.get(key), fallback.get(key))
 
-        try:
-            required = int(intent.get("required_image_count", normalized.get("required_image_count", 1)))
-        except (TypeError, ValueError):
-            required = normalized.get("required_image_count", 1)
+        required = self._to_positive_int(
+            intent.get("required_image_count"),
+            normalized.get("required_image_count", 1),
+        )
         normalized["required_image_count"] = max(1, min(self._image_edit_max_images, required))
 
         reason = str(intent.get("reason") or "").strip()
@@ -642,12 +642,17 @@ class ImageGenPlugin(Star):
         if not isinstance(plan, dict):
             return image_items
         indexes = []
-        primary = plan.get("primary_image_index")
-        if isinstance(primary, int):
+        primary = ImageGenPlugin._to_positive_int(plan.get("primary_image_index"))
+        if primary:
             indexes.append(primary)
         refs = plan.get("reference_image_indexes")
         if isinstance(refs, list):
-            indexes.extend(ref for ref in refs if isinstance(ref, int))
+            indexes.extend(
+                index for index in (ImageGenPlugin._to_positive_int(ref) for ref in refs)
+                if index
+            )
+        elif refs:
+            indexes.extend(ImageGenPlugin._extract_index_values(refs))
         selected = []
         seen = set()
         for index in indexes:
@@ -656,6 +661,29 @@ class ImageGenPlugin(Star):
                 selected.append(image_items[zero_based])
                 seen.add(zero_based)
         return selected or image_items
+
+    @staticmethod
+    def _to_positive_int(value, default=None):
+        if isinstance(value, bool) or value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return int(value) if int(value) > 0 else default
+        match = re.search(r"\d+", str(value))
+        if not match:
+            return default
+        number = int(match.group(0))
+        return number if number > 0 else default
+
+    @staticmethod
+    def _extract_index_values(value) -> list:
+        if isinstance(value, (list, tuple, set)):
+            values = []
+            for item in value:
+                index = ImageGenPlugin._to_positive_int(item)
+                if index:
+                    values.append(index)
+            return values
+        return [int(item) for item in re.findall(r"\d+", str(value)) if int(item) > 0]
 
     @staticmethod
     def _extract_chat_text(resp: dict) -> str:

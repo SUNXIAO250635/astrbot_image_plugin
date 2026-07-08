@@ -19,10 +19,17 @@ def _auth_headers(api_key: str) -> dict:
 
 
 def _join(base_url: str, path: str) -> str:
-    base = (base_url or "").rstrip("/")
-    # base_url 可能本身就是完整 endpoint，避免拼接出 //v1/...
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        raise ApiException("请先在插件配置中填写 base_url")
+    path = "/" + (path or "").lstrip("/")
+    # base_url 可能本身就是完整 endpoint，避免重复拼接。
     if base.endswith(path):
         return base
+    # base_url 常见填法是 https://api.example.com/v1；此时 path 若也以 /v1/
+    # 开头，需要避免拼成 /v1/v1/...
+    if path.startswith("/v1/") and base.endswith("/v1"):
+        return f"{base}{path[3:]}"
     return f"{base}{path}"
 
 
