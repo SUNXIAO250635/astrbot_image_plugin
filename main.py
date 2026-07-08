@@ -24,6 +24,13 @@ PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 if PLUGIN_DIR not in sys.path:
     sys.path.insert(0, PLUGIN_DIR)
 
+DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT = (
+    "你是专业的 AI 图像和视频生成提示词优化助手。"
+    "请把用户的简短需求改写成适合图像/视频生成模型的高质量中文提示词。"
+    "保留用户核心意图，补充主体、场景、构图、光线、风格、材质、细节和画面质量描述。"
+    "不要输出解释、标题、编号、引号或 Markdown，只输出最终提示词。"
+)
+
 try:
     from . import adapters
     from .media import extract_media, download_to_file
@@ -83,6 +90,9 @@ class ImageGenPlugin(Star):
             yield event.plain_result("❌ 请提供提示词，例如: /画 文 一只猫")
             event.stop_event()
             return
+        prompt, prompt_notice = await self._prepare_prompt(prompt, "文生图")
+        if prompt_notice:
+            yield event.plain_result(prompt_notice)
         yield await self._do_text_to_image(event, prompt)
 
     @image_group.command("图", alias={"图生图", "img2img"})
@@ -105,6 +115,9 @@ class ImageGenPlugin(Star):
             )
             event.stop_event()
             return
+        prompt, prompt_notice = await self._prepare_prompt(prompt, "图生图")
+        if prompt_notice:
+            yield event.plain_result(prompt_notice)
         strategy = self.config.get("image_to_image_strategy", "image_edits")
         yield await self._do_image_to_image(event, prompt, img_bytes, img_name, strategy)
 
@@ -120,6 +133,9 @@ class ImageGenPlugin(Star):
             yield event.plain_result("❌ 请提供提示词，例如: /画 视频 火车穿越雪山")
             event.stop_event()
             return
+        prompt, prompt_notice = await self._prepare_prompt(prompt, "文生视频")
+        if prompt_notice:
+            yield event.plain_result(prompt_notice)
         strategy = self.config.get("video_via_strategy", "openai_video")
         yield await self._do_text_to_video(event, prompt, strategy)
 
@@ -143,6 +159,9 @@ class ImageGenPlugin(Star):
             )
             event.stop_event()
             return
+        prompt, prompt_notice = await self._prepare_prompt(prompt, "图生视频")
+        if prompt_notice:
+            yield event.plain_result(prompt_notice)
         strategy = self.config.get("image_to_video_strategy", "openai_video")
         yield await self._do_image_to_video(event, prompt, img_bytes, img_name, strategy)
 
@@ -189,6 +208,136 @@ class ImageGenPlugin(Star):
         if value is None:
             return default
         return str(value).strip().lower() in {"1", "true", "yes", "on", "开启", "启用"}
+
+    @property
+    def _prompt_enhance_enabled(self) -> bool:
+        cfg = self._cfg("prompt_enhance")
+        value = self.config.get("prompt_enhance_enabled", cfg.get("enabled", "true"))
+        return self._cfg_bool(value, True)
+
+    @property
+    def _prompt_enhance_show_prompt(self) -> bool:
+        cfg = self._cfg("prompt_enhance")
+        value = self.config.get("prompt_enhance_show_prompt", cfg.get("show_prompt", "true"))
+        return self._cfg_bool(value, True)
+
+    @property
+    def _prompt_enhance_system_prompt(self) -> str:
+        cfg = self._cfg("prompt_enhance")
+        return (
+            self.config.get("prompt_enhance_system_prompt")
+            or cfg.get("system_prompt")
+            or DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT
+        )
+
+    async def _prepare_prompt(self, prompt: str, task_name: str) -> tuple:
+        """可选地用 chat completions 优化提示词；失败时回退原文。"""
+        original = (prompt or "").strip()
+        if not original or not self._prompt_enhance_enabled:
+            return original, None
+
+        chat_cfg = dict(self._cfg("adapter_openai_chat"))
+        if not chat_cfg.get("base_url"):
+            return original, None
+        chat_cfg["system_prompt"] = self._prompt_enhance_system_prompt
+
+        rewrite_prompt = (
+            f"任务类型：{task_name}\n"
+            f"用户原始提示词：{original}\n"
+            "请输出优化后的最终提示词。"
+        )
+        try:
+            resp = await adapters.openai_chat(
+                chat_cfg, rewrite_prompt, None, self._timeout, self._proxy
+            )
+            enhanced = self._clean_prompt_text(self._extract_chat_text(resp))
+        except Exception as e:
+            logger.warning(f"提示词优化失败，使用原提示词: {e}")
+            return original, None
+
+        if not enhanced:
+            logger.warning(f"提示词优化响应未提取到文本: {resp}")
+            return original, None
+
+        notice = (
+            f"✨ 优化后的提示词：\n{enhanced}"
+            if self._prompt_enhance_show_prompt
+            else None
+        )
+        return enhanced, notice
+
+    @staticmethod
+    def _extract_chat_text(resp: dict) -> str:
+        if not isinstance(resp, dict):
+            return ""
+
+        choices = resp.get("choices")
+        if isinstance(choices, list) and choices:
+            choice = choices[0] or {}
+            if isinstance(choice, dict):
+                message = choice.get("message") or {}
+                if isinstance(message, dict):
+                    text = ImageGenPlugin._content_to_text(message.get("content"))
+                    if text:
+                        return text
+                text = ImageGenPlugin._content_to_text(choice.get("text"))
+                if text:
+                    return text
+
+        for key in ("output_text", "content", "text"):
+            text = ImageGenPlugin._content_to_text(resp.get(key))
+            if text:
+                return text
+
+        data = resp.get("data")
+        if isinstance(data, dict):
+            for key in ("output_text", "content", "text"):
+                text = ImageGenPlugin._content_to_text(data.get(key))
+                if text:
+                    return text
+        return ""
+
+    @staticmethod
+    def _content_to_text(content) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    value = item.get("text") or item.get("content")
+                    if isinstance(value, dict):
+                        value = value.get("text") or value.get("content")
+                    if value:
+                        parts.append(str(value))
+            return "\n".join(parts)
+        return ""
+
+    @staticmethod
+    def _clean_prompt_text(text: str) -> str:
+        text = (text or "").strip()
+        text = re.sub(r"^```(?:\w+)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+
+        prefixes = (
+            "优化后的提示词：",
+            "优化提示词：",
+            "最终提示词：",
+            "提示词：",
+            "Prompt:",
+            "prompt:",
+        )
+        for prefix in prefixes:
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+                break
+
+        quote_pairs = {('"', '"'), ("'", "'"), ("“", "”"), ("「", "」")}
+        if len(text) >= 2 and (text[0], text[-1]) in quote_pairs:
+            text = text[1:-1].strip()
+        return text
 
     def _access_denied_result(self, event: AstrMessageEvent):
         """检查用户/群聊白名单；白名单为空时默认不限制。"""
@@ -443,7 +592,9 @@ class ImageGenPlugin(Star):
         if strategy == "openai_chat":
             cfg = self._cfg("adapter_openai_chat")
             try:
-                resp = await adapters.openai_chat(cfg, prompt, None, self._timeout)
+                resp = await adapters.openai_chat(
+                    cfg, prompt, None, self._timeout, self._proxy
+                )
             except adapters.ApiException as e:
                 return event.plain_result(f"❌ {e}")
             return await self._send_result(event, resp, "文生视频", expect="video")

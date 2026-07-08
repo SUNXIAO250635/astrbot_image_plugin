@@ -177,7 +177,11 @@ async def image_edits(
 # 3) openai  /v1/chat/completions
 # --------------------------------------------------------------------------- #
 async def openai_chat(
-    cfg: dict, prompt: str, image_bytes: Optional[bytes] = None, timeout: int = 180
+    cfg: dict,
+    prompt: str,
+    image_bytes: Optional[bytes] = None,
+    timeout: int = 180,
+    proxy: str = "",
 ) -> dict:
     url = _join(cfg["base_url"], "/v1/chat/completions")
     messages = []
@@ -207,7 +211,9 @@ async def openai_chat(
         "model": cfg.get("model", "gpt-4o"),
         "messages": messages,
     }
-    return await _post_json(url, _auth_headers(cfg.get("api_key", "")), payload, timeout)
+    return await _post_json(
+        url, _auth_headers(cfg.get("api_key", "")), payload, timeout, proxy
+    )
 
 
 # --------------------------------------------------------------------------- #

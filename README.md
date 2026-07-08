@@ -12,13 +12,16 @@
 插件管理 → 本插件 → 设置 中配置以下四个适配器（每个含 base_url / api_key / model）：
 - `adapter_image_generation` 文生图
 - `adapter_image_edits` 图生图 / 图像编辑
-- `adapter_openai_chat` 走对话模型生视频
+- `adapter_openai_chat` 走对话模型生视频，也用于提示词优化
 - `adapter_openai_video` 文生视频
 
 以及：
 - `video_via_strategy` 文生视频优先适配器
 - `image_to_image_strategy` 图生图优先适配器
 - `image_to_video_strategy` 图生视频优先适配器
+- `prompt_enhance_enabled` 是否先用 `adapter_openai_chat` 优化提示词
+- `prompt_enhance_show_prompt` 是否发送优化后的提示词
+- `prompt_enhance_system_prompt` 提示词优化系统提示词
 - `user_whitelist` 用户白名单（可空；留空不限制用户）
 - `group_whitelist` 群聊白名单（可空；留空不限制群聊）
 - `deny_message` 无权限提示语
@@ -29,6 +32,8 @@
 > **图片尺寸**：`adapter_image_generation.size` / `adapter_image_edits.size` 为可手填文本框，支持任意尺寸（如 `1024x1024` / `2048x1152` / `4096x4096`，或 `16:9` 等比例）。最终能否真正输出该尺寸取决于上游渠道/模型支持，请按模型说明填写。
 
 > **Seedream 4.5**：`doubao-seedream-4.5` 在 `/v1/images/generations` 同时支持文生图和图生图。使用它做图生图时，把 `image_to_image_strategy` 设为 `image_generation`，`adapter_image_generation.model` 设为 `doubao-seedream-4.5`，`adapter_image_generation.size` 建议从 `1920x1920` 起。`adapter_image_generation.watermark` 默认是 `false`，即默认请求无水印输出；如上游不支持该字段，可改成 `auto`。
+
+> **提示词优化**：`prompt_enhance_enabled` 默认开启。插件会先用 `adapter_openai_chat` 调 `/v1/chat/completions` 把原始提示词改写成更适合生成模型的提示词，并在生成前发送优化后的内容；如果 chat completions 未配置或调用失败，会静默回退原始提示词继续生成。
 
 > **白名单**：`user_whitelist` 和 `group_whitelist` 都支持用逗号、空格或换行分隔多个 ID；不填写时默认不限制。群聊白名单只限制群聊消息，私聊不会因为群聊白名单被拦截；如需限制私聊用户，请填写用户白名单。
 

@@ -96,6 +96,32 @@
       }
     }
   },
+  "prompt_enhance_enabled": {
+    "description": "是否先用 adapter_openai_chat 优化提示词",
+    "type": "string",
+    "default": "true",
+    "options": [
+      "true",
+      "false"
+    ],
+    "hint": "开启后，文生图/图生图/文生视频/图生视频都会先调用 chat completions 改写提示词；如果 chat 失败会自动使用原提示词继续生成。"
+  },
+  "prompt_enhance_show_prompt": {
+    "description": "是否发送优化后的提示词",
+    "type": "string",
+    "default": "true",
+    "options": [
+      "true",
+      "false"
+    ],
+    "hint": "开启后，生成前会先把优化后的提示词发到当前会话。"
+  },
+  "prompt_enhance_system_prompt": {
+    "description": "提示词优化系统提示词",
+    "type": "text",
+    "default": "你是专业的 AI 图像和视频生成提示词优化助手。请把用户的简短需求改写成适合图像/视频生成模型的高质量中文提示词。保留用户核心意图，补充主体、场景、构图、光线、风格、材质、细节和画面质量描述。不要输出解释、标题、编号、引号或 Markdown，只输出最终提示词。",
+    "hint": "只影响提示词优化步骤；不会覆盖 adapter_openai_chat.system_prompt 的原配置。"
+  },
   "adapter_openai_video": {
     "description": "文生视频 / openai-video 适配器 (/v1/video/generations)",
     "type": "object",
