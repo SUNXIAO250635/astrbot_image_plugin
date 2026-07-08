@@ -112,7 +112,7 @@ async def image_generation(
     proxy: str = "",
 ) -> dict:
     model = cfg.get("model", "dall-e-3")
-    url = _join(cfg["base_url"], "/v1/images/generations")
+    url = _join(cfg.get("base_url", ""), "/v1/images/generations")
     payload = {
         "model": model,
         "prompt": prompt,
@@ -188,10 +188,11 @@ async def image_edits(
     timeout: int,
     proxy: str = "",
 ) -> dict:
-    url = _join(cfg["base_url"], "/images/edits")
+    base_url = cfg.get("base_url", "")
+    url = _join(base_url, "/images/edits")
     # 部分 base_url 形如 https://api.x/v1 ，我们也补 /v1
     if "/v1" not in url:
-        url = _join(cfg["base_url"], "/v1/images/edits")
+        url = _join(base_url, "/v1/images/edits")
 
     fields = [
         ("model", cfg.get("model", "gpt-image-1")),
@@ -217,7 +218,7 @@ async def openai_chat(
     timeout: int = 180,
     proxy: str = "",
 ) -> dict:
-    url = _join(cfg["base_url"], "/v1/chat/completions")
+    url = _join(cfg.get("base_url", ""), "/v1/chat/completions")
     messages = []
     sysp = cfg.get("system_prompt", "")
     if sysp:
@@ -271,7 +272,7 @@ async def openai_video(
     import base64 as _b64
     from aiohttp import FormData
 
-    submit_url = _join(cfg["base_url"], "/v1/video/generations")
+    submit_url = _join(cfg.get("base_url", ""), "/v1/video/generations")
     headers = _auth_headers(cfg.get("api_key", ""))
     seconds = int(cfg.get("seconds", 8) or 8)
 
@@ -292,14 +293,15 @@ async def openai_video(
         # 优先传 base64 image，兼容更多后端
         try:
             b64 = _b64.b64encode(image_bytes).decode()
-            form.add_field("image", f"data:image/png;base64,{b64}")
+            content_type = _image_content_type(image_filename)
+            form.add_field("image", f"data:{content_type};base64,{b64}")
             form.add_field("image_file", image_bytes,
                            filename=image_filename or "input.png",
-                           content_type="image/png")
+                           content_type=content_type)
         except Exception:
             form.add_field("image", image_bytes,
                            filename=image_filename or "input.png",
-                           content_type="image/png")
+                           content_type=_image_content_type(image_filename))
 
         import json as _json
 
@@ -343,9 +345,10 @@ async def openai_video(
             continue
 
         status = _video_status(last)
-        if status in ("SUCCESS", "COMPLETED", "succeeded", "success"):
+        status_norm = status.lower()
+        if status_norm in ("success", "succeeded", "completed"):
             return last
-        if status in ("FAILED", "failed", "error"):
+        if status_norm in ("failed", "error", "cancelled", "canceled"):
             reason = _video_fail_reason(last)
             raise ApiException(f"视频生成失败: {reason or status}")
         if _now() > deadline_poll:

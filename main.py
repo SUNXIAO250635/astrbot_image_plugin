@@ -58,7 +58,7 @@ except ImportError:
     from media import extract_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.6",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.7",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -553,7 +553,7 @@ class ImageGenPlugin(Star):
         mentions_multi = self._mentions_multi_image(prompt)
         required = max(indexes) if indexes else (2 if mentions_multi else 1)
         should_plan = self._should_plan_image_edit(prompt, current_image_count)
-        requires_current = required > 1 or mentions_multi
+        requires_current = bool(indexes) or required > 1 or mentions_multi
         return {
             "requires_current_images": requires_current,
             "required_image_count": max(1, min(10, required)),
@@ -655,8 +655,6 @@ class ImageGenPlugin(Star):
             "其他图",
             "参考图",
             "素材图",
-            "主图",
-            "基础图",
         )
         return any(marker in prompt for marker in markers)
 
@@ -1153,8 +1151,11 @@ class ImageGenPlugin(Star):
             return event.plain_result(f"❌ {task_name}成功但响应中未找到图片/视频。")
         kind, value = media
         if expect == "video" and kind != "video":
-            # 当期望视频但拿到图片URL时，仍按图片发送（兜底）
-            logger.info(f"{task_name} 期望视频但接口返回图片，按图片发送。")
+            if self._looks_like_video_fallback(value):
+                kind = "video"
+            else:
+                # 当期望视频但明确拿到图片时，仍按图片发送（兜底）
+                logger.info(f"{task_name} 期望视频但接口返回图片，按图片发送。")
 
         # 双容器(Docker)部署下：AstrBot 容器里的本地文件 file:// 路径
         # NapCat 容器读不到(ENOENT)。所以只要拿到的是公网 URL，就优先 fromURL 直发，
@@ -1182,6 +1183,19 @@ class ImageGenPlugin(Star):
         else:
             self._remember_last_image(event, path, os.path.basename(path), source=task_name)
             return event.image_result(path)
+
+    @staticmethod
+    def _looks_like_video_fallback(value: str) -> bool:
+        if not isinstance(value, str):
+            return False
+        lower = value.lower()
+        if re.search(r"\.(png|jpe?g|webp|gif|bmp)(?:$|[?#])", lower):
+            return False
+        return bool(
+            lower.startswith("http")
+            or lower.startswith("data:video/")
+            or re.search(r"\.(mp4|mov|webm|mkv|avi)(?:$|[?#])", lower)
+        )
 
     async def terminate(self):
         pass
