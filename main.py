@@ -25,10 +25,19 @@ PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 if PLUGIN_DIR not in sys.path:
     sys.path.insert(0, PLUGIN_DIR)
 
-DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT = (
+LEGACY_PROMPT_ENHANCE_SYSTEM_PROMPT = (
     "你是专业的 AI 图像和视频生成提示词优化助手。"
     "请把用户的简短需求改写成适合图像/视频生成模型的高质量中文提示词。"
     "保留用户核心意图，补充主体、场景、构图、光线、风格、材质、细节和画面质量描述。"
+    "不要输出解释、标题、编号、引号或 Markdown，只输出最终提示词。"
+)
+
+DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT = (
+    "你是专业的 AI 图像和视频生成提示词优化助手。"
+    "请把用户需求扩写成适合图像/视频生成模型的高质量中文提示词。"
+    "必须保留用户原文中的所有主体、动作、场景、风格、限制和细节，不能摘要、不能压缩、不能删减关键条件。"
+    "在不改变原意的前提下补充主体外观、场景环境、构图、镜头、光线、色彩、材质、氛围、细节和画面质量描述。"
+    "输出应比原始提示词更具体、更信息密集；原文较短时通常扩写到 80-180 个中文字符，原文较长时不要明显短于原文。"
     "不要输出解释、标题、编号、引号或 Markdown，只输出最终提示词。"
 )
 
@@ -58,7 +67,7 @@ except ImportError:
     from media import extract_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.8",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.9",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -302,12 +311,14 @@ class ImageGenPlugin(Star):
     def _prompt_enhance_system_prompt(self) -> str:
         options_cfg = self._cfg("generation_options")
         legacy_cfg = self._cfg("prompt_enhance")
-        return (
+        prompt = (
             self.config.get("prompt_enhance_system_prompt")
             or options_cfg.get("prompt_enhance_system_prompt")
             or legacy_cfg.get("system_prompt")
-            or DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT
         )
+        if not prompt or str(prompt).strip() == LEGACY_PROMPT_ENHANCE_SYSTEM_PROMPT:
+            return DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT
+        return prompt
 
     @property
     def _image_edit_plan_enabled(self) -> bool:
@@ -396,6 +407,12 @@ class ImageGenPlugin(Star):
         if not enhanced:
             logger.warning(f"提示词优化响应未提取到文本: {resp}")
             return original, None
+        if self._is_prompt_enhancement_degraded(original, enhanced):
+            logger.warning(
+                "提示词优化结果过短或疑似丢失细节，使用原提示词: "
+                f"original={original!r}, enhanced={enhanced!r}"
+            )
+            return original, None
 
         notice = (
             f"✨ 优化后的提示词：\n{enhanced}"
@@ -403,6 +420,22 @@ class ImageGenPlugin(Star):
             else None
         )
         return enhanced, notice
+
+    @staticmethod
+    def _is_prompt_enhancement_degraded(original: str, enhanced: str) -> bool:
+        original_len = ImageGenPlugin._prompt_signal_len(original)
+        enhanced_len = ImageGenPlugin._prompt_signal_len(enhanced)
+        if not enhanced_len:
+            return True
+        if original_len < 12:
+            return enhanced_len < max(original_len + 8, 18)
+        if original_len < 80:
+            return enhanced_len < max(int(original_len * 1.15), original_len + 8)
+        return enhanced_len < int(original_len * 0.85)
+
+    @staticmethod
+    def _prompt_signal_len(text: str) -> int:
+        return len(re.sub(r"\s+", "", text or ""))
 
     async def _plan_image_edit_once(self, prompt: str, current_image_items: list) -> dict:
         """用一次 Chat 完成图生图意图判断、图片选择和提示词规划。"""
