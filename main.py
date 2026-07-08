@@ -19,8 +19,12 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 import astrbot.api.message_components as Comp
 
-import adapters
-from media import extract_media, download_to_file
+try:
+    from . import adapters
+    from .media import extract_media, download_to_file
+except ImportError:
+    import adapters
+    from media import extract_media, download_to_file
 
 
 @register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.0",
