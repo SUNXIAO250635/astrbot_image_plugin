@@ -58,7 +58,7 @@ except ImportError:
     from media import extract_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.7",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.8",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -349,7 +349,15 @@ class ImageGenPlugin(Star):
         )
 
     def _chat_cfg_for_prompt_tools(self, system_prompt: str) -> dict:
-        cfg = dict(self._cfg("adapter_openai_chat"))
+        prompt_cfg = self._cfg("adapter_prompt_chat")
+        if any(prompt_cfg.get(key) for key in ("base_url", "api_key", "model")):
+            cfg = {
+                key: value
+                for key, value in prompt_cfg.items()
+                if value and key in {"base_url", "api_key", "model"}
+            }
+        else:
+            cfg = dict(self._cfg("adapter_openai_chat"))
         options_cfg = self._cfg("generation_options")
         prompt_model = (
             self.config.get("prompt_chat_model")

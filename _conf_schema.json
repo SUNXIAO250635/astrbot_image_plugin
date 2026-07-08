@@ -96,6 +96,28 @@
       }
     }
   },
+  "adapter_prompt_chat": {
+    "description": "提示词优化 / 图生图理解 Chat 适配器 (/v1/chat/completions)",
+    "hint": "专门用于提示词优化和自然语言图生图理解。留空时兼容使用 adapter_openai_chat。",
+    "type": "object",
+    "items": {
+      "base_url": {
+        "description": "Base URL",
+        "type": "string",
+        "default": ""
+      },
+      "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "default": ""
+      },
+      "model": {
+        "description": "模型名",
+        "type": "string",
+        "default": ""
+      }
+    }
+  },
   "adapter_openai_video": {
     "description": "文生视频 / openai-video 适配器 (/v1/video/generations)",
     "type": "object",
@@ -168,13 +190,13 @@
         "description": "提示词优化/图生图理解使用的 Chat 模型",
         "type": "string",
         "default": "",
-        "hint": "优先用于提示词优化和自然语言图生图理解；留空时使用 adapter_openai_chat.model。"
+        "hint": "旧版模型覆盖项；优先级高于 adapter_prompt_chat.model。新配置建议直接填写 adapter_prompt_chat.model；留空时使用 adapter_prompt_chat.model 或 adapter_openai_chat.model。"
       },
       "prompt_enhance_enabled": {
-        "description": "是否先用 adapter_openai_chat 优化提示词",
+        "description": "是否先用 adapter_prompt_chat 优化提示词",
         "type": "bool",
         "default": true,
-        "hint": "开启后，文生图/图生图/文生视频/图生视频都会先调用 chat completions 改写提示词；如果 chat 失败会自动使用原提示词继续生成。"
+        "hint": "开启后，文生图/图生图/文生视频/图生视频都会先调用 chat completions 改写提示词；如果 adapter_prompt_chat 未填写，会兼容使用 adapter_openai_chat；如果 chat 失败会自动使用原提示词继续生成。"
       },
       "prompt_enhance_show_prompt": {
         "description": "是否发送优化后的提示词",
@@ -186,7 +208,7 @@
         "description": "提示词优化系统提示词",
         "type": "text",
         "default": "你是专业的 AI 图像和视频生成提示词优化助手。请把用户的简短需求改写成适合图像/视频生成模型的高质量中文提示词。保留用户核心意图，补充主体、场景、构图、光线、风格、材质、细节和画面质量描述。不要输出解释、标题、编号、引号或 Markdown，只输出最终提示词。",
-        "hint": "只影响提示词优化步骤；不会覆盖 adapter_openai_chat.system_prompt 的原配置。"
+        "hint": "只影响提示词优化步骤；不会覆盖 adapter_prompt_chat 或 adapter_openai_chat 的原配置。"
       },
       "image_edit_plan_enabled": {
         "description": "是否用 Chat 理解自然语言图生图需求",

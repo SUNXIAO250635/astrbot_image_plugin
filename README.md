@@ -9,18 +9,19 @@
 依赖 `aiohttp`（AstrBot 通常已自带）。
 
 ## 配置
-插件管理 → 本插件 → 设置 中配置以下四个适配器（每个含 base_url / api_key / model）：
+插件管理 → 本插件 → 设置 中配置以下适配器（每个含 base_url / api_key / model）：
 - `adapter_image_generation` 文生图
 - `adapter_image_edits` 图生图 / 图像编辑
-- `adapter_openai_chat` 走对话模型生视频，也用于提示词优化
+- `adapter_prompt_chat` 提示词优化 / 图生图理解
+- `adapter_openai_chat` 走对话模型生视频；`adapter_prompt_chat` 留空时也可兼容用于提示词优化
 - `adapter_openai_video` 文生视频
 
 以及：
 - `generation_options.video_via_strategy` 文生视频优先适配器
 - `generation_options.image_to_image_strategy` 图生图优先适配器
 - `generation_options.image_to_video_strategy` 图生视频优先适配器
-- `generation_options.prompt_chat_model` 提示词优化/图生图理解使用的 Chat 模型
-- `generation_options.prompt_enhance_enabled` 是否先用 `adapter_openai_chat` 优化提示词
+- `generation_options.prompt_chat_model` 提示词优化/图生图理解使用的 Chat 模型（旧版覆盖项；新配置建议填 `adapter_prompt_chat.model`）
+- `generation_options.prompt_enhance_enabled` 是否先用 `adapter_prompt_chat` 优化提示词
 - `generation_options.prompt_enhance_show_prompt` 是否发送优化后的提示词
 - `generation_options.prompt_enhance_system_prompt` 提示词优化系统提示词
 - `generation_options.image_edit_plan_enabled` 是否用 Chat 理解自然语言图生图需求
@@ -37,9 +38,9 @@
 
 > **Seedream 4.5**：`doubao-seedream-4.5` 在 `/v1/images/generations` 同时支持文生图和图生图。使用它做图生图时，把 `generation_options.image_to_image_strategy` 设为 `image_generation`，`adapter_image_generation.model` 设为 `doubao-seedream-4.5`，`adapter_image_generation.size` 建议从 `1920x1920` 起。`adapter_image_generation.watermark` 默认是 `false`，即默认请求无水印输出；如上游不支持该字段，可改成 `auto`。
 
-> **提示词优化**：`generation_options.prompt_enhance_enabled` 默认开启。插件会先用 `adapter_openai_chat` 调 `/v1/chat/completions` 把原始提示词改写成更适合生成模型的提示词，并在生成前发送优化后的内容；如果 chat completions 未配置或调用失败，会静默回退原始提示词继续生成。
+> **提示词优化**：`generation_options.prompt_enhance_enabled` 默认开启。插件会先用 `adapter_prompt_chat` 调 `/v1/chat/completions` 把原始提示词改写成更适合生成模型的提示词，并在生成前发送优化后的内容；如果 `adapter_prompt_chat` 未填写，会兼容使用 `adapter_openai_chat`；如果 chat completions 未配置或调用失败，会静默回退原始提示词继续生成。
 
-> **图生图语义理解**：`/画 图` 会用一次 `adapter_openai_chat` 调用同时完成语义分析、图片编号选择和最终提示词改写，并把理解后的提示词发给你。普通“上一张/刚才那张”单图编辑可以复用同会话同用户缓存；多图/编号/参考图/替换角色等语义必须在同一条消息里附带对应图片，不会从聊天记录或上一张缓存里拼接多图。当前消息里的图片按出现顺序编号为第一张、第二张、第三张……默认最多读取 4 张，可用 `generation_options.image_edit_max_images` 调整。如果上游图生图接口支持多图，会把选中的图片一起传给接口，否则取决于上游兼容性。
+> **图生图语义理解**：`/画 图` 会用一次 `adapter_prompt_chat` 调用同时完成语义分析、图片编号选择和最终提示词改写，并把理解后的提示词发给你。普通“上一张/刚才那张”单图编辑可以复用同会话同用户缓存；多图/编号/参考图/替换角色等语义必须在同一条消息里附带对应图片，不会从聊天记录或上一张缓存里拼接多图。当前消息里的图片按出现顺序编号为第一张、第二张、第三张……默认最多读取 4 张，可用 `generation_options.image_edit_max_images` 调整。如果上游图生图接口支持多图，会把选中的图片一起传给接口，否则取决于上游兼容性。
 
 > **白名单**：`access_control.user_whitelist` 和 `access_control.group_whitelist` 都支持用逗号、空格或换行分隔多个 ID；不填写时默认不限制。群聊白名单只限制群聊消息，私聊不会因为群聊白名单被拦截；如需限制私聊用户，请填写用户白名单。
 
