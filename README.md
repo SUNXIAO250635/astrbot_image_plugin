@@ -19,8 +19,9 @@
 - `video_via_strategy` 文生视频优先适配器
 - `image_to_image_strategy` 图生图优先适配器
 - `image_to_video_strategy` 图生视频优先适配器
-- `access_control.user_whitelist` 用户白名单（可空）
-- `access_control.group_whitelist` 群聊白名单（可空）
+- `user_whitelist` 用户白名单（可空；留空不限制用户）
+- `group_whitelist` 群聊白名单（可空；留空不限制群聊）
+- `deny_message` 无权限提示语
 - `image_reference.enable_previous_image` 图生图/图生视频自动复用上一张图片
 - `image_reference.previous_image_ttl` 上一张图片缓存有效期
 - `media.save_dir` 保存目录（相对 `data/`）
@@ -29,7 +30,7 @@
 
 > **Seedream 4.5**：`doubao-seedream-4.5` 在 `/v1/images/generations` 同时支持文生图和图生图。使用它做图生图时，把 `image_to_image_strategy` 设为 `image_generation`，`adapter_image_generation.model` 设为 `doubao-seedream-4.5`，`adapter_image_generation.size` 建议从 `1920x1920` 起。`adapter_image_generation.watermark` 默认是 `false`，即默认请求无水印输出；如上游不支持该字段，可改成 `auto`。
 
-> **白名单**：用户白名单和群聊白名单都支持用逗号、空格或换行分隔多个 ID；不填写时默认不限制。群聊白名单只限制群聊消息，私聊不会因为群聊白名单被拦截；如需限制私聊用户，请填写用户白名单。
+> **白名单**：`user_whitelist` 和 `group_whitelist` 都支持用逗号、空格或换行分隔多个 ID；不填写时默认不限制。群聊白名单只限制群聊消息，私聊不会因为群聊白名单被拦截；如需限制私聊用户，请填写用户白名单。
 
 > **上一张图片**：`/画 图` 和 `/画 图生视频` 会优先使用当前消息附带的图片；当前消息未带图时，会自动使用同一会话、同一用户最近发送的图片，或本插件最近回复给该用户的图片。默认缓存 1800 秒，可在 `image_reference.previous_image_ttl` 调整。
 

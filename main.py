@@ -193,25 +193,28 @@ class ImageGenPlugin(Star):
     def _access_denied_result(self, event: AstrMessageEvent):
         """检查用户/群聊白名单；白名单为空时默认不限制。"""
         access_cfg = self._cfg("access_control")
-        user_whitelist = self._split_id_list(access_cfg.get("user_whitelist", ""))
-        group_whitelist = self._split_id_list(access_cfg.get("group_whitelist", ""))
+        user_whitelist = self._split_id_list(
+            self.config.get("user_whitelist", access_cfg.get("user_whitelist", ""))
+        )
+        group_whitelist = self._split_id_list(
+            self.config.get("group_whitelist", access_cfg.get("group_whitelist", ""))
+        )
+        deny_message = (
+            self.config.get("deny_message")
+            or access_cfg.get("deny_message")
+            or "❌ 你没有权限使用画图/视频插件。"
+        )
 
         sender_id = self._event_sender_id(event)
         group_id = self._event_group_id(event)
 
         if user_whitelist and sender_id not in user_whitelist:
             logger.info(f"拒绝非白名单用户使用生图插件: user={sender_id}")
-            return event.plain_result(
-                access_cfg.get("deny_message")
-                or "❌ 你没有权限使用画图/视频插件。"
-            )
+            return event.plain_result(deny_message)
 
         if group_whitelist and group_id and group_id not in group_whitelist:
             logger.info(f"拒绝非白名单群聊使用生图插件: group={group_id}")
-            return event.plain_result(
-                access_cfg.get("deny_message")
-                or "❌ 当前群聊没有权限使用画图/视频插件。"
-            )
+            return event.plain_result(deny_message)
 
         return None
 
