@@ -53,7 +53,7 @@ except ImportError:
     from media import extract_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.2",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.3",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -75,7 +75,7 @@ class ImageGenPlugin(Star):
         yield event.plain_result(
             "🖼️ 画图/视频插件\n"
             "/画 文 <提示词>          文生图(image-generation)\n"
-            "/画 图 <提示词>          图生图(image-edits，可复用上一张图)\n"
+            "/画 图 <提示词>          图生图(image-edits；多图需同条消息附图)\n"
             "/画 视频 <提示词>        文生视频\n"
             "/画 图生视频 <提示词>    图生视频(可复用上一张图)\n"
             "别名：文生图/文生视频"
@@ -121,7 +121,20 @@ class ImageGenPlugin(Star):
             yield event.plain_result("❌ 请提供提示词，例如: /画 图 改成水彩")
             event.stop_event()
             return
-        image_items = await self._get_image_items(event)
+        current_image_items = await self._get_current_image_items(event)
+        image_ref_error = self._current_image_reference_error(
+            prompt, len(current_image_items)
+        )
+        if image_ref_error:
+            yield event.plain_result(image_ref_error)
+            event.stop_event()
+            return
+
+        using_cached_image = not current_image_items
+        image_items = current_image_items
+        if using_cached_image:
+            image_items = await self._get_cached_image_items(event)
+
         if not image_items:
             yield event.plain_result(
                 "❌ 图生图需要一张图片。请在同一消息里附带图片，"
@@ -129,9 +142,12 @@ class ImageGenPlugin(Star):
             )
             event.stop_event()
             return
-        prompt, prompt_notice, image_items = await self._prepare_image_edit(
-            prompt, image_items
-        )
+        if using_cached_image:
+            prompt, prompt_notice = await self._prepare_prompt(prompt, "图生图")
+        else:
+            prompt, prompt_notice, image_items = await self._prepare_image_edit(
+                prompt, image_items
+            )
         if prompt_notice:
             yield event.plain_result(prompt_notice)
         strategy = self._cfg_value(
@@ -447,6 +463,68 @@ class ImageGenPlugin(Star):
             "背景氛围",
         )
         return any(marker in (prompt or "") for marker in markers)
+
+    @classmethod
+    def _current_image_reference_error(cls, prompt: str, current_count: int) -> str:
+        indexes = cls._requested_image_indexes(prompt)
+        if indexes:
+            required = max(indexes)
+            if current_count < required:
+                return (
+                    "❌ 多图/编号图生图需要在同一条消息里附带被引用的图片。"
+                    f"你提到了第 {required} 张图，但当前消息只有 {current_count} 张图；"
+                    "插件不会从聊天记录里拼接第几张图。"
+                )
+
+        if cls._mentions_multi_image(prompt) and current_count < 2:
+            return (
+                "❌ 多图图生图请在同一条消息里附带多张图片。"
+                "为了避免顺序和来源误判，多图模式不会引用上一张图片缓存或聊天记录。"
+            )
+        return ""
+
+    @staticmethod
+    def _requested_image_indexes(prompt: str) -> set:
+        prompt = prompt or ""
+        indexes = set()
+        zh_nums = {
+            "一": 1,
+            "二": 2,
+            "两": 2,
+            "三": 3,
+            "四": 4,
+            "五": 5,
+            "六": 6,
+            "七": 7,
+            "八": 8,
+            "九": 9,
+            "十": 10,
+        }
+        for match in re.finditer(r"第\s*(\d{1,2})\s*张", prompt, re.I):
+            indexes.add(int(match.group(1)))
+        for match in re.finditer(r"(?:图|image)\s*(\d{1,2})", prompt, re.I):
+            indexes.add(int(match.group(1)))
+        for num, index in zh_nums.items():
+            if f"第{num}张" in prompt:
+                indexes.add(index)
+        return indexes
+
+    @staticmethod
+    def _mentions_multi_image(prompt: str) -> bool:
+        prompt = prompt or ""
+        markers = (
+            "多张",
+            "两张",
+            "几张",
+            "另一张",
+            "其它图",
+            "其他图",
+            "参考图",
+            "素材图",
+            "主图",
+            "基础图",
+        )
+        return any(marker in prompt for marker in markers)
 
     @staticmethod
     def _extract_json_object(text: str) -> dict:
@@ -768,6 +846,15 @@ class ImageGenPlugin(Star):
         self, event: AstrMessageEvent, max_images: int = None
     ) -> list:
         """从当前消息读取多张图；没有当前图时回退上一张缓存。"""
+        items = await self._get_current_image_items(event, max_images)
+        if items:
+            return items
+        return await self._get_cached_image_items(event)
+
+    async def _get_current_image_items(
+        self, event: AstrMessageEvent, max_images: int = None
+    ) -> list:
+        """只读取当前消息里的图片，不引用缓存。"""
         items = []
         max_images = self._image_edit_max_images if max_images is None else max_images
         refs = self._extract_image_refs(event)[:max(1, max_images)]
@@ -787,6 +874,10 @@ class ImageGenPlugin(Star):
             )
             return items
 
+        return []
+
+    async def _get_cached_image_items(self, event: AstrMessageEvent) -> list:
+        """只读取同会话同用户上一张图片缓存。"""
         cached_ref = self._get_cached_image_ref(event)
         if cached_ref[0]:
             data, filename = await self._load_image_bytes(*cached_ref)
