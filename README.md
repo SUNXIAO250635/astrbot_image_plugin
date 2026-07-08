@@ -19,9 +19,13 @@
 - `generation_options.video_via_strategy` 文生视频优先适配器
 - `generation_options.image_to_image_strategy` 图生图优先适配器
 - `generation_options.image_to_video_strategy` 图生视频优先适配器
+- `generation_options.prompt_chat_model` 提示词优化/图生图理解使用的 Chat 模型
 - `generation_options.prompt_enhance_enabled` 是否先用 `adapter_openai_chat` 优化提示词
 - `generation_options.prompt_enhance_show_prompt` 是否发送优化后的提示词
 - `generation_options.prompt_enhance_system_prompt` 提示词优化系统提示词
+- `generation_options.image_edit_plan_enabled` 是否用 Chat 理解自然语言图生图需求
+- `generation_options.image_edit_plan_send_images` 图生图理解时是否把图片发送给 Chat
+- `generation_options.image_edit_max_images` 图生图最多读取几张图片
 - `access_control.user_whitelist` 用户白名单（可空；留空不限制用户）
 - `access_control.group_whitelist` 群聊白名单（可空；留空不限制群聊）
 - `access_control.deny_message` 无权限提示语
@@ -34,6 +38,8 @@
 > **Seedream 4.5**：`doubao-seedream-4.5` 在 `/v1/images/generations` 同时支持文生图和图生图。使用它做图生图时，把 `generation_options.image_to_image_strategy` 设为 `image_generation`，`adapter_image_generation.model` 设为 `doubao-seedream-4.5`，`adapter_image_generation.size` 建议从 `1920x1920` 起。`adapter_image_generation.watermark` 默认是 `false`，即默认请求无水印输出；如上游不支持该字段，可改成 `auto`。
 
 > **提示词优化**：`generation_options.prompt_enhance_enabled` 默认开启。插件会先用 `adapter_openai_chat` 调 `/v1/chat/completions` 把原始提示词改写成更适合生成模型的提示词，并在生成前发送优化后的内容；如果 chat completions 未配置或调用失败，会静默回退原始提示词继续生成。
+
+> **多图图生图理解**：`/画 图` 当前消息里可以带多张图片，插件按图片出现顺序编号为第一张、第二张、第三张……默认最多读取 4 张，可用 `generation_options.image_edit_max_images` 调整。提示词里出现“以第一张为基础、用第二张替换角色特征、第三张参考服装”等描述时，会先用 `adapter_openai_chat` 生成更明确的图生图提示词；如果上游图生图接口支持多图，会把这些图片一起传给接口，否则取决于上游兼容性。
 
 > **白名单**：`access_control.user_whitelist` 和 `access_control.group_whitelist` 都支持用逗号、空格或换行分隔多个 ID；不填写时默认不限制。群聊白名单只限制群聊消息，私聊不会因为群聊白名单被拦截；如需限制私聊用户，请填写用户白名单。
 
@@ -51,7 +57,7 @@
 > 也可使用别名：`/画 文生图`、`/画 文生视频`。
 
 ## 注意
-- 图生图 / 图生视频 会优先读取当前消息里的图片；没有当前图片时会尝试读取上一张图片缓存。
+- 图生图会优先读取当前消息里的多张图片并按顺序编号；图生视频读取第一张图片；没有当前图片时会尝试读取上一张图片缓存。
 - 上一张图片缓存按“会话 + 用户”隔离，群聊里不会复用其他用户发送或触发生成的图片。
 - 白名单 ID 分别对应 AstrBot 事件中的 `get_sender_id()` 和 `get_group_id()`。
 - 媒体文件保存在 `data/imagegen/` 下。

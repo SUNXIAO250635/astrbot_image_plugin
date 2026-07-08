@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import sys
@@ -31,6 +32,19 @@ DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT = (
     "不要输出解释、标题、编号、引号或 Markdown，只输出最终提示词。"
 )
 
+DEFAULT_IMAGE_EDIT_PLAN_SYSTEM_PROMPT = (
+    "你是专业的多图图像编辑需求理解助手。用户会给出一段自然语言和按顺序编号的图片。"
+    "请理解“第一张图/第二张图/第三张图/第 N 张图/基底/参考/替换/保留/角色特征”等指代关系，"
+    "把需求改写成适合图生图或图片编辑模型执行的中文提示词。"
+    "如果用户要求以某一张为基础、用其他图片替换人物或参考角色特征，提示词必须明确："
+    "保留基础图的背景、构图、氛围、动作、光线和镜头关系；"
+    "将基础图中的目标人物或物体按用户指定关系替换为参考图中的角色身份与外观特征，"
+    "包括眼睛、脸型、发型、身材、服装、材质和显著特征；多张参考图要逐一说明用途并保持自然融合。"
+    "只输出 JSON，不要 Markdown。格式："
+    "{\"prompt\":\"最终图生图提示词\",\"primary_image_index\":1,"
+    "\"reference_image_indexes\":[2,3],\"summary\":\"一句话说明理解结果\"}"
+)
+
 try:
     from . import adapters
     from .media import extract_media, download_to_file
@@ -39,7 +53,7 @@ except ImportError:
     from media import extract_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.1",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.2",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -107,21 +121,29 @@ class ImageGenPlugin(Star):
             yield event.plain_result("❌ 请提供提示词，例如: /画 图 改成水彩")
             event.stop_event()
             return
-        img_bytes, img_name = await self._get_first_image_bytes(event)
-        if not img_bytes:
+        image_items = await self._get_image_items(event)
+        if not image_items:
             yield event.plain_result(
                 "❌ 图生图需要一张图片。请在同一消息里附带图片，"
                 "或先发送/生成一张图片后再使用本指令。"
             )
             event.stop_event()
             return
-        prompt, prompt_notice = await self._prepare_prompt(prompt, "图生图")
+        prompt, prompt_notice, image_items = await self._prepare_image_edit(
+            prompt, image_items
+        )
         if prompt_notice:
             yield event.plain_result(prompt_notice)
         strategy = self._cfg_value(
             "image_to_image_strategy", "image_edits", "generation_options"
         )
-        yield await self._do_image_to_image(event, prompt, img_bytes, img_name, strategy)
+        yield await self._do_image_to_image(
+            event,
+            prompt,
+            [item["bytes"] for item in image_items],
+            [item["filename"] for item in image_items],
+            strategy,
+        )
 
     @image_group.command("视频", alias={"文生视频", "txt2video"})
     async def text_to_video(self, event: AstrMessageEvent, prompt: str = ""):
@@ -257,16 +279,67 @@ class ImageGenPlugin(Star):
             or DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT
         )
 
+    @property
+    def _image_edit_plan_enabled(self) -> bool:
+        options_cfg = self._cfg("generation_options")
+        value = self.config.get(
+            "image_edit_plan_enabled",
+            options_cfg.get("image_edit_plan_enabled", True),
+        )
+        return self._cfg_bool(value, True)
+
+    @property
+    def _image_edit_plan_send_images(self) -> bool:
+        options_cfg = self._cfg("generation_options")
+        value = self.config.get(
+            "image_edit_plan_send_images",
+            options_cfg.get("image_edit_plan_send_images", True),
+        )
+        return self._cfg_bool(value, True)
+
+    @property
+    def _image_edit_max_images(self) -> int:
+        options_cfg = self._cfg("generation_options")
+        value = self.config.get(
+            "image_edit_max_images",
+            options_cfg.get("image_edit_max_images", 4),
+        )
+        try:
+            return max(1, min(10, int(value)))
+        except (TypeError, ValueError):
+            return 4
+
+    @property
+    def _image_edit_plan_system_prompt(self) -> str:
+        options_cfg = self._cfg("generation_options")
+        return (
+            self.config.get("image_edit_plan_system_prompt")
+            or options_cfg.get("image_edit_plan_system_prompt")
+            or DEFAULT_IMAGE_EDIT_PLAN_SYSTEM_PROMPT
+        )
+
+    def _chat_cfg_for_prompt_tools(self, system_prompt: str) -> dict:
+        cfg = dict(self._cfg("adapter_openai_chat"))
+        options_cfg = self._cfg("generation_options")
+        prompt_model = (
+            self.config.get("prompt_chat_model")
+            or options_cfg.get("prompt_chat_model")
+            or cfg.get("model")
+        )
+        if prompt_model:
+            cfg["model"] = prompt_model
+        cfg["system_prompt"] = system_prompt
+        return cfg
+
     async def _prepare_prompt(self, prompt: str, task_name: str) -> tuple:
         """可选地用 chat completions 优化提示词；失败时回退原文。"""
         original = (prompt or "").strip()
         if not original or not self._prompt_enhance_enabled:
             return original, None
 
-        chat_cfg = dict(self._cfg("adapter_openai_chat"))
+        chat_cfg = self._chat_cfg_for_prompt_tools(self._prompt_enhance_system_prompt)
         if not chat_cfg.get("base_url"):
             return original, None
-        chat_cfg["system_prompt"] = self._prompt_enhance_system_prompt
 
         rewrite_prompt = (
             f"任务类型：{task_name}\n"
@@ -275,7 +348,7 @@ class ImageGenPlugin(Star):
         )
         try:
             resp = await adapters.openai_chat(
-                chat_cfg, rewrite_prompt, None, self._timeout, self._proxy
+                chat_cfg, rewrite_prompt, timeout=self._timeout, proxy=self._proxy
             )
             enhanced = self._clean_prompt_text(self._extract_chat_text(resp))
         except Exception as e:
@@ -292,6 +365,123 @@ class ImageGenPlugin(Star):
             else None
         )
         return enhanced, notice
+
+    async def _prepare_image_edit(self, prompt: str, image_items: list) -> tuple:
+        original = (prompt or "").strip()
+        if not image_items:
+            return original, None, image_items
+        if not self._should_plan_image_edit(original, len(image_items)):
+            enhanced, notice = await self._prepare_prompt(original, "图生图")
+            return enhanced, notice, image_items
+
+        chat_cfg = self._chat_cfg_for_prompt_tools(self._image_edit_plan_system_prompt)
+        if not chat_cfg.get("base_url") or not self._image_edit_plan_enabled:
+            enhanced, notice = await self._prepare_prompt(original, "图生图")
+            return enhanced, notice, image_items
+
+        plan_prompt = (
+            f"用户原始图生图需求：{original}\n"
+            f"当前消息共有 {len(image_items)} 张图片，编号从 1 开始。"
+            "请理解图片编号指代关系，输出严格 JSON。"
+        )
+        image_bytes = [item["bytes"] for item in image_items]
+        image_names = [item["filename"] for item in image_items]
+        try:
+            resp = await adapters.openai_chat(
+                chat_cfg,
+                plan_prompt,
+                image_bytes=image_bytes if self._image_edit_plan_send_images else None,
+                image_filename=image_names if self._image_edit_plan_send_images else None,
+                timeout=self._timeout,
+                proxy=self._proxy,
+            )
+            plan_text = self._extract_chat_text(resp)
+            plan = self._extract_json_object(plan_text)
+            planned_prompt = self._clean_prompt_text(
+                plan.get("prompt") if plan else plan_text
+            )
+        except Exception as e:
+            logger.warning(f"图生图自然语言理解失败，使用原提示词: {e}")
+            return original, None, image_items
+
+        if not planned_prompt:
+            return original, None, image_items
+
+        selected_items = self._select_planned_images(image_items, plan)
+        notice = None
+        if self._prompt_enhance_show_prompt:
+            summary = (plan or {}).get("summary", "") if isinstance(plan, dict) else ""
+            notice = (
+                "✨ 图生图理解：\n"
+                f"{summary + chr(10) if summary else ''}"
+                f"优化后的提示词：\n{planned_prompt}"
+            )
+        return planned_prompt, notice, selected_items
+
+    @staticmethod
+    def _should_plan_image_edit(prompt: str, image_count: int) -> bool:
+        if image_count >= 2:
+            return True
+        markers = (
+            "第一张",
+            "第二张",
+            "第三张",
+            "第四张",
+            "第1张",
+            "第2张",
+            "第3张",
+            "第4张",
+            "第n张",
+            "第N张",
+            "基于",
+            "以",
+            "为基础",
+            "参考",
+            "替换",
+            "保留",
+            "角色特征",
+            "人物",
+            "身材",
+            "眼睛",
+            "动作",
+            "背景氛围",
+        )
+        return any(marker in (prompt or "") for marker in markers)
+
+    @staticmethod
+    def _extract_json_object(text: str) -> dict:
+        text = (text or "").strip()
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return {}
+        try:
+            data = json.loads(text[start:end + 1])
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _select_planned_images(image_items: list, plan: dict) -> list:
+        if not isinstance(plan, dict):
+            return image_items
+        indexes = []
+        primary = plan.get("primary_image_index")
+        if isinstance(primary, int):
+            indexes.append(primary)
+        refs = plan.get("reference_image_indexes")
+        if isinstance(refs, list):
+            indexes.extend(ref for ref in refs if isinstance(ref, int))
+        selected = []
+        seen = set()
+        for index in indexes:
+            zero_based = index - 1
+            if 0 <= zero_based < len(image_items) and zero_based not in seen:
+                selected.append(image_items[zero_based])
+                seen.add(zero_based)
+        return selected or image_items
 
     @staticmethod
     def _extract_chat_text(resp: dict) -> str:
@@ -491,16 +681,21 @@ class ImageGenPlugin(Star):
             self._last_image_cache.pop(key, None)
 
     def _extract_first_image_ref(self, event: AstrMessageEvent) -> tuple:
+        refs = self._extract_image_refs(event)
+        return refs[0] if refs else None
+
+    def _extract_image_refs(self, event: AstrMessageEvent) -> list:
         message_obj = getattr(event, "message_obj", None)
         chain = getattr(message_obj, "message", None) or []
+        refs = []
         for comp in chain:
             if isinstance(comp, Comp.Image):
                 value = getattr(comp, "url", None) or getattr(comp, "file", None) \
                     or getattr(comp, "path", None)
                 if value:
                     value = str(value)
-                    return value, self._image_ref_filename(value)
-        return None
+                    refs.append((value, self._image_ref_filename(value)))
+        return refs
 
     @staticmethod
     def _image_ref_filename(value: str) -> str:
@@ -564,21 +759,44 @@ class ImageGenPlugin(Star):
         self, event: AstrMessageEvent
     ) -> tuple:
         """从入站消息链里取第一张图片，返回 (bytes, filename)。"""
-        image_ref = self._extract_first_image_ref(event)
-        if image_ref:
+        items = await self._get_image_items(event, max_images=1)
+        if items:
+            return items[0]["bytes"], items[0]["filename"]
+        return None, None
+
+    async def _get_image_items(
+        self, event: AstrMessageEvent, max_images: int = None
+    ) -> list:
+        """从当前消息读取多张图；没有当前图时回退上一张缓存。"""
+        items = []
+        max_images = self._image_edit_max_images if max_images is None else max_images
+        refs = self._extract_image_refs(event)[:max(1, max_images)]
+        for index, image_ref in enumerate(refs, start=1):
             data, filename = await self._load_image_bytes(*image_ref)
             if data:
-                self._remember_last_image(
-                    event, image_ref[0], filename or image_ref[1], source="current"
-                )
-                return data, filename
+                filename = filename or image_ref[1] or f"input_{index}.png"
+                items.append({
+                    "bytes": data,
+                    "filename": filename,
+                    "ref": image_ref[0],
+                })
+
+        if items:
+            self._remember_last_image(
+                event, items[0]["ref"], items[0]["filename"], source="current"
+            )
+            return items
 
         cached_ref = self._get_cached_image_ref(event)
         if cached_ref[0]:
             data, filename = await self._load_image_bytes(*cached_ref)
             if data:
-                return data, filename
-        return None, None
+                return [{
+                    "bytes": data,
+                    "filename": filename or cached_ref[1] or "input.png",
+                    "ref": cached_ref[0],
+                }]
+        return []
 
     # ---- 文生图 ----
     async def _do_text_to_image(self, event, prompt):
@@ -618,7 +836,7 @@ class ImageGenPlugin(Star):
             cfg = self._cfg("adapter_openai_chat")
             try:
                 resp = await adapters.openai_chat(
-                    cfg, prompt, None, self._timeout, self._proxy
+                    cfg, prompt, timeout=self._timeout, proxy=self._proxy
                 )
             except adapters.ApiException as e:
                 return event.plain_result(f"❌ {e}")

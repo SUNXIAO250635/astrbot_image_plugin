@@ -100,8 +100,8 @@ async def image_generation(
     cfg: dict,
     prompt: str,
     timeout: int,
-    image_bytes: Optional[bytes] = None,
-    image_filename: Optional[str] = None,
+    image_bytes=None,
+    image_filename=None,
     proxy: str = "",
 ) -> dict:
     model = cfg.get("model", "dall-e-3")
@@ -116,7 +116,7 @@ async def image_generation(
     if watermark is not None:
         payload["watermark"] = watermark
     if image_bytes is not None:
-        payload["image"] = _image_data_uri(image_bytes, image_filename)
+        payload["image"] = _image_payload(image_bytes, image_filename)
     return await _post_json(
         url, _auth_headers(cfg.get("api_key", "")), payload, timeout, proxy
     )
@@ -135,13 +135,38 @@ def _as_bool(value) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "开启", "启用"}
 
 
-def _image_data_uri(image_bytes: bytes, image_filename: Optional[str] = None) -> str:
+def _image_payload(image_bytes, image_filename=None):
+    images = _normalize_images(image_bytes, image_filename)
+    data_uris = [_image_data_uri(data, name) for data, name in images]
+    if not data_uris:
+        return None
+    return data_uris[0] if len(data_uris) == 1 else data_uris
+
+
+def _normalize_images(image_bytes, image_filename=None) -> list:
+    if image_bytes is None:
+        return []
+    if isinstance(image_bytes, (list, tuple)):
+        filenames = image_filename if isinstance(image_filename, (list, tuple)) else []
+        return [
+            (data, filenames[i] if i < len(filenames) else f"input_{i + 1}.png")
+            for i, data in enumerate(image_bytes)
+            if data is not None
+        ]
+    return [(image_bytes, image_filename or "input.png")]
+
+
+def _image_content_type(image_filename: Optional[str] = None) -> str:
     filename = (image_filename or "").lower()
-    mime = "image/png"
     if filename.endswith((".jpg", ".jpeg")):
-        mime = "image/jpeg"
-    elif filename.endswith(".webp"):
-        mime = "image/webp"
+        return "image/jpeg"
+    if filename.endswith(".webp"):
+        return "image/webp"
+    return "image/png"
+
+
+def _image_data_uri(image_bytes: bytes, image_filename: Optional[str] = None) -> str:
+    mime = _image_content_type(image_filename)
     return f"data:{mime};base64,{base64.b64encode(image_bytes).decode()}"
 
 
@@ -151,8 +176,8 @@ def _image_data_uri(image_bytes: bytes, image_filename: Optional[str] = None) ->
 async def image_edits(
     cfg: dict,
     prompt: str,
-    image_bytes: bytes,
-    image_filename: str,
+    image_bytes,
+    image_filename,
     timeout: int,
     proxy: str = "",
 ) -> dict:
@@ -164,10 +189,11 @@ async def image_edits(
     fields = [
         ("model", cfg.get("model", "gpt-image-1")),
         ("prompt", prompt),
-        ("image", image_bytes, image_filename, "image/png"),
         ("n", str(cfg.get("n", 1) or 1)),
         ("size", cfg.get("size", "1024x1024")),
     ]
+    for data, filename in _normalize_images(image_bytes, image_filename):
+        fields.append(("image", data, filename, _image_content_type(filename)))
     return await _post_multipart(
         url, _auth_headers(cfg.get("api_key", "")), fields, timeout, proxy
     )
@@ -179,7 +205,8 @@ async def image_edits(
 async def openai_chat(
     cfg: dict,
     prompt: str,
-    image_bytes: Optional[bytes] = None,
+    image_bytes=None,
+    image_filename=None,
     timeout: int = 180,
     proxy: str = "",
 ) -> dict:
@@ -189,21 +216,21 @@ async def openai_chat(
     if sysp:
         messages.append({"role": "system", "content": sysp})
 
-    if image_bytes is None:
+    images = _normalize_images(image_bytes, image_filename)
+    if not images:
         messages.append({"role": "user", "content": prompt})
     else:
         # 多模态：把图片作为 image_url 内联 base64
-        import base64 as _b64
-
-        b64 = _b64.b64encode(image_bytes).decode()
-        data_uri = f"data:image/png;base64,{b64}"
+        content = [{"type": "text", "text": prompt}]
+        for index, (data, filename) in enumerate(images, start=1):
+            content.append({"type": "text", "text": f"图 {index} / image {index}"})
+            content.append(
+                {"type": "image_url", "image_url": {"url": _image_data_uri(data, filename)}}
+            )
         messages.append(
             {
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_uri}},
-                ],
+                "content": content,
             }
         )
 

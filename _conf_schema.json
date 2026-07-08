@@ -164,6 +164,12 @@
           "image_edits"
         ]
       },
+      "prompt_chat_model": {
+        "description": "提示词优化/图生图理解使用的 Chat 模型",
+        "type": "string",
+        "default": "gpt-4o",
+        "hint": "优先用于提示词优化和自然语言图生图理解；留空时使用 adapter_openai_chat.model。"
+      },
       "prompt_enhance_enabled": {
         "description": "是否先用 adapter_openai_chat 优化提示词",
         "type": "bool",
@@ -181,6 +187,30 @@
         "type": "text",
         "default": "你是专业的 AI 图像和视频生成提示词优化助手。请把用户的简短需求改写成适合图像/视频生成模型的高质量中文提示词。保留用户核心意图，补充主体、场景、构图、光线、风格、材质、细节和画面质量描述。不要输出解释、标题、编号、引号或 Markdown，只输出最终提示词。",
         "hint": "只影响提示词优化步骤；不会覆盖 adapter_openai_chat.system_prompt 的原配置。"
+      },
+      "image_edit_plan_enabled": {
+        "description": "是否用 Chat 理解自然语言图生图需求",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，当消息包含多张图片或提示词出现“第一张/第二张/替换/参考/保留”等描述时，会先让 Chat 拆解需求并生成更明确的图生图提示词。失败时回退原提示词。"
+      },
+      "image_edit_plan_send_images": {
+        "description": "图生图理解时是否把图片发送给 Chat",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，Chat 可以看到当前消息中的多张图片并按第一张、第二张、第三张等编号理解。需要所选 Chat 模型支持视觉输入。"
+      },
+      "image_edit_max_images": {
+        "description": "图生图最多读取几张图片",
+        "type": "int",
+        "default": 4,
+        "hint": "从当前消息中按顺序读取图片，默认最多 4 张；代码会限制在 1 到 10 张之间。"
+      },
+      "image_edit_plan_system_prompt": {
+        "description": "图生图自然语言理解系统提示词",
+        "type": "text",
+        "default": "你是专业的多图图像编辑需求理解助手。用户会给出一段自然语言和按顺序编号的图片。请理解“第一张图/第二张图/第三张图/第 N 张图/基底/参考/替换/保留/角色特征”等指代关系，把需求改写成适合图生图或图片编辑模型执行的中文提示词。如果用户要求以某一张为基础、用其他图片替换人物或参考角色特征，提示词必须明确：保留基础图的背景、构图、氛围、动作、光线和镜头关系；将基础图中的目标人物或物体按用户指定关系替换为参考图中的角色身份与外观特征，包括眼睛、脸型、发型、身材、服装、材质和显著特征；多张参考图要逐一说明用途并保持自然融合。只输出 JSON，不要 Markdown。格式：{\"prompt\":\"最终图生图提示词\",\"primary_image_index\":1,\"reference_image_indexes\":[2,3],\"summary\":\"一句话说明理解结果\"}",
+        "hint": "只影响自然语言图生图理解步骤。"
       }
     }
   },
