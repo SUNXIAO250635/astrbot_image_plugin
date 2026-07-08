@@ -39,7 +39,7 @@ except ImportError:
     from media import extract_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.0",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.1",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -118,7 +118,9 @@ class ImageGenPlugin(Star):
         prompt, prompt_notice = await self._prepare_prompt(prompt, "图生图")
         if prompt_notice:
             yield event.plain_result(prompt_notice)
-        strategy = self.config.get("image_to_image_strategy", "image_edits")
+        strategy = self._cfg_value(
+            "image_to_image_strategy", "image_edits", "generation_options"
+        )
         yield await self._do_image_to_image(event, prompt, img_bytes, img_name, strategy)
 
     @image_group.command("视频", alias={"文生视频", "txt2video"})
@@ -136,7 +138,9 @@ class ImageGenPlugin(Star):
         prompt, prompt_notice = await self._prepare_prompt(prompt, "文生视频")
         if prompt_notice:
             yield event.plain_result(prompt_notice)
-        strategy = self.config.get("video_via_strategy", "openai_video")
+        strategy = self._cfg_value(
+            "video_via_strategy", "openai_video", "generation_options"
+        )
         yield await self._do_text_to_video(event, prompt, strategy)
 
     @image_group.command("图生视频", alias={"img2video"})
@@ -162,7 +166,9 @@ class ImageGenPlugin(Star):
         prompt, prompt_notice = await self._prepare_prompt(prompt, "图生视频")
         if prompt_notice:
             yield event.plain_result(prompt_notice)
-        strategy = self.config.get("image_to_video_strategy", "openai_video")
+        strategy = self._cfg_value(
+            "image_to_video_strategy", "openai_video", "generation_options"
+        )
         yield await self._do_image_to_video(event, prompt, img_bytes, img_name, strategy)
 
     # ------------------------------------------------------------------ #
@@ -201,6 +207,15 @@ class ImageGenPlugin(Star):
     def _cfg(self, name: str) -> dict:
         return self.config.get(name, {}) or {}
 
+    def _cfg_value(self, key: str, default=None, *groups):
+        if key in self.config:
+            return self.config.get(key)
+        for group in groups:
+            cfg = self._cfg(group)
+            if key in cfg:
+                return cfg.get(key)
+        return default
+
     @staticmethod
     def _cfg_bool(value, default: bool = False) -> bool:
         if isinstance(value, bool):
@@ -211,22 +226,34 @@ class ImageGenPlugin(Star):
 
     @property
     def _prompt_enhance_enabled(self) -> bool:
-        cfg = self._cfg("prompt_enhance")
-        value = self.config.get("prompt_enhance_enabled", cfg.get("enabled", "true"))
+        options_cfg = self._cfg("generation_options")
+        legacy_cfg = self._cfg("prompt_enhance")
+        value = self.config.get(
+            "prompt_enhance_enabled",
+            options_cfg.get("prompt_enhance_enabled", legacy_cfg.get("enabled", True)),
+        )
         return self._cfg_bool(value, True)
 
     @property
     def _prompt_enhance_show_prompt(self) -> bool:
-        cfg = self._cfg("prompt_enhance")
-        value = self.config.get("prompt_enhance_show_prompt", cfg.get("show_prompt", "true"))
+        options_cfg = self._cfg("generation_options")
+        legacy_cfg = self._cfg("prompt_enhance")
+        value = self.config.get(
+            "prompt_enhance_show_prompt",
+            options_cfg.get(
+                "prompt_enhance_show_prompt", legacy_cfg.get("show_prompt", True)
+            ),
+        )
         return self._cfg_bool(value, True)
 
     @property
     def _prompt_enhance_system_prompt(self) -> str:
-        cfg = self._cfg("prompt_enhance")
+        options_cfg = self._cfg("generation_options")
+        legacy_cfg = self._cfg("prompt_enhance")
         return (
             self.config.get("prompt_enhance_system_prompt")
-            or cfg.get("system_prompt")
+            or options_cfg.get("prompt_enhance_system_prompt")
+            or legacy_cfg.get("system_prompt")
             or DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT
         )
 
@@ -341,16 +368,14 @@ class ImageGenPlugin(Star):
 
     def _access_denied_result(self, event: AstrMessageEvent):
         """检查用户/群聊白名单；白名单为空时默认不限制。"""
-        access_cfg = self._cfg("access_control")
         user_whitelist = self._split_id_list(
-            self.config.get("user_whitelist", access_cfg.get("user_whitelist", ""))
+            self._cfg_value("user_whitelist", "", "access_control")
         )
         group_whitelist = self._split_id_list(
-            self.config.get("group_whitelist", access_cfg.get("group_whitelist", ""))
+            self._cfg_value("group_whitelist", "", "access_control")
         )
         deny_message = (
-            self.config.get("deny_message")
-            or access_cfg.get("deny_message")
+            self._cfg_value("deny_message", "", "access_control")
             or "❌ 你没有权限使用画图/视频插件。"
         )
 

@@ -96,32 +96,6 @@
       }
     }
   },
-  "prompt_enhance_enabled": {
-    "description": "是否先用 adapter_openai_chat 优化提示词",
-    "type": "string",
-    "default": "true",
-    "options": [
-      "true",
-      "false"
-    ],
-    "hint": "开启后，文生图/图生图/文生视频/图生视频都会先调用 chat completions 改写提示词；如果 chat 失败会自动使用原提示词继续生成。"
-  },
-  "prompt_enhance_show_prompt": {
-    "description": "是否发送优化后的提示词",
-    "type": "string",
-    "default": "true",
-    "options": [
-      "true",
-      "false"
-    ],
-    "hint": "开启后，生成前会先把优化后的提示词发到当前会话。"
-  },
-  "prompt_enhance_system_prompt": {
-    "description": "提示词优化系统提示词",
-    "type": "text",
-    "default": "你是专业的 AI 图像和视频生成提示词优化助手。请把用户的简短需求改写成适合图像/视频生成模型的高质量中文提示词。保留用户核心意图，补充主体、场景、构图、光线、风格、材质、细节和画面质量描述。不要输出解释、标题、编号、引号或 Markdown，只输出最终提示词。",
-    "hint": "只影响提示词优化步骤；不会覆盖 adapter_openai_chat.system_prompt 的原配置。"
-  },
   "adapter_openai_video": {
     "description": "文生视频 / openai-video 适配器 (/v1/video/generations)",
     "type": "object",
@@ -158,50 +132,81 @@
       }
     }
   },
-  "video_via_strategy": {
-    "description": "文生视频优先使用哪个适配器",
-    "type": "string",
-    "default": "openai_video",
-    "options": [
-      "openai_video",
-      "openai_chat"
-    ]
+  "generation_options": {
+    "description": "生成选项",
+    "type": "object",
+    "items": {
+      "video_via_strategy": {
+        "description": "文生视频优先使用哪个适配器",
+        "type": "string",
+        "default": "openai_video",
+        "options": [
+          "openai_video",
+          "openai_chat"
+        ]
+      },
+      "image_to_image_strategy": {
+        "description": "图生图优先使用哪个适配器",
+        "type": "string",
+        "default": "image_edits",
+        "options": [
+          "image_edits",
+          "image_generation"
+        ],
+        "hint": "普通 OpenAI 图像编辑用 image_edits；doubao-seedream-4.5 这类在 /v1/images/generations 同时支持图生图的模型用 image_generation。"
+      },
+      "image_to_video_strategy": {
+        "description": "图生视频优先使用哪个适配器",
+        "type": "string",
+        "default": "openai_video",
+        "options": [
+          "openai_video",
+          "image_edits"
+        ]
+      },
+      "prompt_enhance_enabled": {
+        "description": "是否先用 adapter_openai_chat 优化提示词",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，文生图/图生图/文生视频/图生视频都会先调用 chat completions 改写提示词；如果 chat 失败会自动使用原提示词继续生成。"
+      },
+      "prompt_enhance_show_prompt": {
+        "description": "是否发送优化后的提示词",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，生成前会先把优化后的提示词发到当前会话。"
+      },
+      "prompt_enhance_system_prompt": {
+        "description": "提示词优化系统提示词",
+        "type": "text",
+        "default": "你是专业的 AI 图像和视频生成提示词优化助手。请把用户的简短需求改写成适合图像/视频生成模型的高质量中文提示词。保留用户核心意图，补充主体、场景、构图、光线、风格、材质、细节和画面质量描述。不要输出解释、标题、编号、引号或 Markdown，只输出最终提示词。",
+        "hint": "只影响提示词优化步骤；不会覆盖 adapter_openai_chat.system_prompt 的原配置。"
+      }
+    }
   },
-  "image_to_image_strategy": {
-    "description": "图生图优先使用哪个适配器",
-    "type": "string",
-    "default": "image_edits",
-    "options": [
-      "image_edits",
-      "image_generation"
-    ],
-    "hint": "普通 OpenAI 图像编辑用 image_edits；doubao-seedream-4.5 这类在 /v1/images/generations 同时支持图生图的模型用 image_generation。"
-  },
-  "image_to_video_strategy": {
-    "description": "图生视频优先使用哪个适配器",
-    "type": "string",
-    "default": "openai_video",
-    "options": [
-      "openai_video",
-      "image_edits"
-    ]
-  },
-  "user_whitelist": {
-    "description": "用户白名单 ID（逗号、空格或换行分隔；留空不限制用户）",
-    "type": "string",
-    "default": "",
-    "hint": "填写 event.get_sender_id() 对应的用户 ID。示例：10001,10002"
-  },
-  "group_whitelist": {
-    "description": "群聊白名单 ID（逗号、空格或换行分隔；留空不限制群聊）",
-    "type": "string",
-    "default": "",
-    "hint": "仅限制群聊消息；私聊不会因为群聊白名单被拦截。示例：123456789,987654321"
-  },
-  "deny_message": {
-    "description": "无权限提示语",
-    "type": "string",
-    "default": "❌ 你没有权限使用画图/视频插件。"
+  "access_control": {
+    "description": "访问控制",
+    "type": "object",
+    "hint": "白名单为空时默认不限制。",
+    "items": {
+      "user_whitelist": {
+        "description": "用户白名单 ID",
+        "type": "text",
+        "default": "",
+        "hint": "逗号、空格或换行分隔；留空不限制用户。填写 event.get_sender_id() 对应的用户 ID。示例：10001,10002"
+      },
+      "group_whitelist": {
+        "description": "群聊白名单 ID",
+        "type": "text",
+        "default": "",
+        "hint": "逗号、空格或换行分隔；留空不限制群聊。仅限制群聊消息，私聊不会因为群聊白名单被拦截。示例：123456789,987654321"
+      },
+      "deny_message": {
+        "description": "无权限提示语",
+        "type": "string",
+        "default": "❌ 你没有权限使用画图/视频插件。"
+      }
+    }
   },
   "image_reference": {
     "description": "上一张图片引用",
