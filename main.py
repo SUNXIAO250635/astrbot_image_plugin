@@ -45,6 +45,17 @@ DEFAULT_IMAGE_EDIT_PLAN_SYSTEM_PROMPT = (
     "\"reference_image_indexes\":[2,3],\"summary\":\"一句话说明理解结果\"}"
 )
 
+DEFAULT_IMAGE_EDIT_INTENT_SYSTEM_PROMPT = (
+    "你是图生图请求的意图分类器。请根据用户原始提示词和当前消息图片数量，"
+    "判断这次请求是否必须使用当前同一条消息中的图片、至少需要几张当前图片、"
+    "是否需要进入多图/复杂图像编辑规划。只输出 JSON，不要 Markdown。"
+    "字段：requires_current_images(bool), required_image_count(int), "
+    "should_plan(bool), allow_cached_single_image(bool), reason(string)。"
+    "规则：普通单图编辑可以允许使用上一张缓存；凡是用户语义上引用多张图、"
+    "编号图片、参考图、基础图、替换对象、组合/融合多个来源，"
+    "都必须使用当前同一条消息里的图片，不能从聊天记录拼接。"
+)
+
 try:
     from . import adapters
     from .media import extract_media, download_to_file
@@ -53,7 +64,7 @@ except ImportError:
     from media import extract_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.3",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.4",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -122,8 +133,11 @@ class ImageGenPlugin(Star):
             event.stop_event()
             return
         current_image_items = await self._get_current_image_items(event)
-        image_ref_error = self._current_image_reference_error(
+        image_intent = await self._analyze_image_edit_intent(
             prompt, len(current_image_items)
+        )
+        image_ref_error = self._image_intent_error(
+            image_intent, len(current_image_items)
         )
         if image_ref_error:
             yield event.plain_result(image_ref_error)
@@ -133,6 +147,12 @@ class ImageGenPlugin(Star):
         using_cached_image = not current_image_items
         image_items = current_image_items
         if using_cached_image:
+            if not image_intent.get("allow_cached_single_image", True):
+                yield event.plain_result(
+                    "❌ 这个图生图需求需要当前消息附图，不能使用上一张图片缓存。"
+                )
+                event.stop_event()
+                return
             image_items = await self._get_cached_image_items(event)
 
         if not image_items:
@@ -146,7 +166,7 @@ class ImageGenPlugin(Star):
             prompt, prompt_notice = await self._prepare_prompt(prompt, "图生图")
         else:
             prompt, prompt_notice, image_items = await self._prepare_image_edit(
-                prompt, image_items
+                prompt, image_items, bool(image_intent.get("should_plan", False))
             )
         if prompt_notice:
             yield event.plain_result(prompt_notice)
@@ -382,11 +402,13 @@ class ImageGenPlugin(Star):
         )
         return enhanced, notice
 
-    async def _prepare_image_edit(self, prompt: str, image_items: list) -> tuple:
+    async def _prepare_image_edit(
+        self, prompt: str, image_items: list, should_plan: bool = True
+    ) -> tuple:
         original = (prompt or "").strip()
         if not image_items:
             return original, None, image_items
-        if not self._should_plan_image_edit(original, len(image_items)):
+        if not should_plan:
             enhanced, notice = await self._prepare_prompt(original, "图生图")
             return enhanced, notice, image_items
 
@@ -431,8 +453,87 @@ class ImageGenPlugin(Star):
                 "✨ 图生图理解：\n"
                 f"{summary + chr(10) if summary else ''}"
                 f"优化后的提示词：\n{planned_prompt}"
-            )
+        )
         return planned_prompt, notice, selected_items
+
+    async def _analyze_image_edit_intent(
+        self, prompt: str, current_image_count: int
+    ) -> dict:
+        fallback = self._fallback_image_edit_intent(prompt, current_image_count)
+        if not self._image_edit_plan_enabled:
+            return fallback
+
+        chat_cfg = self._chat_cfg_for_prompt_tools(
+            DEFAULT_IMAGE_EDIT_INTENT_SYSTEM_PROMPT
+        )
+        if not chat_cfg.get("base_url"):
+            return fallback
+
+        analyze_prompt = (
+            f"用户原始图生图提示词：{(prompt or '').strip()}\n"
+            f"当前同一条消息中附带的图片数量：{current_image_count}\n"
+            "请判断是否需要当前消息中的多张/编号/参考图片，以及是否允许使用上一张单图缓存。"
+        )
+        try:
+            resp = await adapters.openai_chat(
+                chat_cfg,
+                analyze_prompt,
+                timeout=self._timeout,
+                proxy=self._proxy,
+            )
+            intent = self._normalize_image_edit_intent(
+                self._extract_json_object(self._extract_chat_text(resp)),
+                fallback,
+            )
+        except Exception as e:
+            logger.warning(f"图生图意图分析失败，使用兜底判断: {e}")
+            return fallback
+        return intent
+
+    def _normalize_image_edit_intent(self, intent: dict, fallback: dict) -> dict:
+        if not isinstance(intent, dict):
+            return fallback
+
+        normalized = dict(fallback)
+        for key in (
+            "requires_current_images",
+            "should_plan",
+            "allow_cached_single_image",
+        ):
+            if key in intent:
+                normalized[key] = self._cfg_bool(intent.get(key), fallback.get(key))
+
+        try:
+            required = int(intent.get("required_image_count", normalized.get("required_image_count", 1)))
+        except (TypeError, ValueError):
+            required = normalized.get("required_image_count", 1)
+        normalized["required_image_count"] = max(1, min(self._image_edit_max_images, required))
+
+        reason = str(intent.get("reason") or "").strip()
+        if reason:
+            normalized["reason"] = reason
+
+        if normalized["required_image_count"] > 1:
+            normalized["requires_current_images"] = True
+            normalized["allow_cached_single_image"] = False
+            normalized["should_plan"] = True
+        return normalized
+
+    def _fallback_image_edit_intent(
+        self, prompt: str, current_image_count: int
+    ) -> dict:
+        indexes = self._requested_image_indexes(prompt)
+        mentions_multi = self._mentions_multi_image(prompt)
+        required = max(indexes) if indexes else (2 if mentions_multi else 1)
+        should_plan = self._should_plan_image_edit(prompt, current_image_count)
+        requires_current = required > 1 or mentions_multi
+        return {
+            "requires_current_images": requires_current,
+            "required_image_count": max(1, min(self._image_edit_max_images, required)),
+            "should_plan": should_plan,
+            "allow_cached_single_image": not requires_current,
+            "reason": "fallback",
+        }
 
     @staticmethod
     def _should_plan_image_edit(prompt: str, image_count: int) -> bool:
@@ -464,22 +565,17 @@ class ImageGenPlugin(Star):
         )
         return any(marker in (prompt or "") for marker in markers)
 
-    @classmethod
-    def _current_image_reference_error(cls, prompt: str, current_count: int) -> str:
-        indexes = cls._requested_image_indexes(prompt)
-        if indexes:
-            required = max(indexes)
-            if current_count < required:
-                return (
-                    "❌ 多图/编号图生图需要在同一条消息里附带被引用的图片。"
-                    f"你提到了第 {required} 张图，但当前消息只有 {current_count} 张图；"
-                    "插件不会从聊天记录里拼接第几张图。"
-                )
-
-        if cls._mentions_multi_image(prompt) and current_count < 2:
+    @staticmethod
+    def _image_intent_error(intent: dict, current_count: int) -> str:
+        if not intent.get("requires_current_images"):
+            return ""
+        required = int(intent.get("required_image_count") or 1)
+        if current_count < required:
             return (
-                "❌ 多图图生图请在同一条消息里附带多张图片。"
-                "为了避免顺序和来源误判，多图模式不会引用上一张图片缓存或聊天记录。"
+                "❌ 这个图生图需求需要在同一条消息里附带对应图片。"
+                f"当前语义分析至少需要 {required} 张当前消息图片，"
+                f"但当前消息只有 {current_count} 张；"
+                "插件不会从聊天记录或上一张缓存里拼接多图。"
             )
         return ""
 
