@@ -23,7 +23,18 @@
         "description": "图片尺寸(可手填, 如 1024x1024 / 2048x1152 / 4096x4096 / 16:9)",
         "type": "string",
         "default": "1024x1024",
-        "hint": "支持任意尺寸。填 WxH 或 比例(如 16:9)。部分模型仅支持特定尺寸，请按模型说明填写。"
+        "hint": "支持任意尺寸。填 WxH 或 比例(如 16:9)。doubao-seedream-4.5 这类模型可能要求至少 1920x1920。"
+      },
+      "watermark": {
+        "description": "水印开关（默认 false，即无水印；auto 表示不传该字段）",
+        "type": "string",
+        "default": "false",
+        "options": [
+          "false",
+          "true",
+          "auto"
+        ],
+        "hint": "doubao-seedream-4.5 默认可能带水印；保持 false 可请求无水印输出。若上游不支持 watermark 字段，可设为 auto。"
       },
       "n": {
         "description": "生成数量",
@@ -130,6 +141,16 @@
       "openai_chat"
     ]
   },
+  "image_to_image_strategy": {
+    "description": "图生图优先使用哪个适配器",
+    "type": "string",
+    "default": "image_edits",
+    "options": [
+      "image_edits",
+      "image_generation"
+    ],
+    "hint": "普通 OpenAI 图像编辑用 image_edits；doubao-seedream-4.5 这类在 /v1/images/generations 同时支持图生图的模型用 image_generation。"
+  },
   "image_to_video_strategy": {
     "description": "图生视频优先使用哪个适配器",
     "type": "string",
@@ -138,6 +159,51 @@
       "openai_video",
       "image_edits"
     ]
+  },
+  "access_control": {
+    "description": "访问控制（白名单为空时默认不限制）",
+    "type": "object",
+    "items": {
+      "user_whitelist": {
+        "description": "用户白名单 ID（逗号、空格或换行分隔；留空不限制用户）",
+        "type": "text",
+        "default": "",
+        "hint": "填写 event.get_sender_id() 对应的用户 ID。示例：10001,10002"
+      },
+      "group_whitelist": {
+        "description": "群聊白名单 ID（逗号、空格或换行分隔；留空不限制群聊）",
+        "type": "text",
+        "default": "",
+        "hint": "仅限制群聊消息；私聊不会因为群聊白名单被拦截。示例：123456789,987654321"
+      },
+      "deny_message": {
+        "description": "无权限提示语",
+        "type": "string",
+        "default": "❌ 你没有权限使用画图/视频插件。"
+      }
+    }
+  },
+  "image_reference": {
+    "description": "上一张图片引用",
+    "type": "object",
+    "items": {
+      "enable_previous_image": {
+        "description": "当前消息未带图时，是否自动使用同会话同用户的上一张图片",
+        "type": "string",
+        "default": "true",
+        "options": [
+          "true",
+          "false"
+        ],
+        "hint": "开启后，图生图/图生视频可复用用户上次发送的图片，或插件上次回复给该用户的图片。"
+      },
+      "previous_image_ttl": {
+        "description": "上一张图片缓存有效期（秒，0 表示不过期）",
+        "type": "int",
+        "default": 1800,
+        "hint": "默认 1800 秒。缓存只保存在内存中，插件重载后会清空。"
+      }
+    }
   },
   "media": {
     "description": "媒体处理",

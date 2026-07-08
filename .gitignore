@@ -1,5 +1,6 @@
 # 本地会话/工具状态，不属于插件
 .claude/
+.codex/
 .omx/
 __pycache__/
 *.pyc

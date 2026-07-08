@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import base64
 from typing import Optional
 
 import aiohttp
@@ -96,16 +97,52 @@ async def _post_multipart(
 # 1) image-generation  /v1/images/generations
 # --------------------------------------------------------------------------- #
 async def image_generation(
-    cfg: dict, prompt: str, timeout: int
+    cfg: dict,
+    prompt: str,
+    timeout: int,
+    image_bytes: Optional[bytes] = None,
+    image_filename: Optional[str] = None,
+    proxy: str = "",
 ) -> dict:
+    model = cfg.get("model", "dall-e-3")
     url = _join(cfg["base_url"], "/v1/images/generations")
     payload = {
-        "model": cfg.get("model", "dall-e-3"),
+        "model": model,
         "prompt": prompt,
         "n": int(cfg.get("n", 1) or 1),
         "size": cfg.get("size", "1024x1024"),
     }
-    return await _post_json(url, _auth_headers(cfg.get("api_key", "")), payload, timeout)
+    watermark = _watermark_value(cfg, model)
+    if watermark is not None:
+        payload["watermark"] = watermark
+    if image_bytes is not None:
+        payload["image"] = _image_data_uri(image_bytes, image_filename)
+    return await _post_json(
+        url, _auth_headers(cfg.get("api_key", "")), payload, timeout, proxy
+    )
+
+
+def _watermark_value(cfg: dict, model: str) -> Optional[bool]:
+    raw = cfg.get("watermark", "false")
+    if str(raw).strip().lower() in {"", "auto", "default", "none"}:
+        return None
+    return _as_bool(raw)
+
+
+def _as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "开启", "启用"}
+
+
+def _image_data_uri(image_bytes: bytes, image_filename: Optional[str] = None) -> str:
+    filename = (image_filename or "").lower()
+    mime = "image/png"
+    if filename.endswith((".jpg", ".jpeg")):
+        mime = "image/jpeg"
+    elif filename.endswith(".webp"):
+        mime = "image/webp"
+    return f"data:{mime};base64,{base64.b64encode(image_bytes).decode()}"
 
 
 # --------------------------------------------------------------------------- #
@@ -308,4 +345,3 @@ def _now() -> float:
     import time as _t
 
     return _t.monotonic()
-
