@@ -32,13 +32,27 @@ LEGACY_PROMPT_ENHANCE_SYSTEM_PROMPT = (
     "不要输出解释、标题、编号、引号或 Markdown，只输出最终提示词。"
 )
 
-DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT = (
+PREVIOUS_PROMPT_ENHANCE_SYSTEM_PROMPT = (
     "你是专业的 AI 图像和视频生成提示词优化助手。"
     "请把用户需求扩写成适合图像/视频生成模型的高质量中文提示词。"
     "必须保留用户原文中的所有主体、动作、场景、风格、限制和细节，不能摘要、不能压缩、不能删减关键条件。"
     "在不改变原意的前提下补充主体外观、场景环境、构图、镜头、光线、色彩、材质、氛围、细节和画面质量描述。"
     "输出应比原始提示词更具体、更信息密集；原文较短时通常扩写到 80-180 个中文字符，原文较长时不要明显短于原文。"
     "不要输出解释、标题、编号、引号或 Markdown，只输出最终提示词。"
+)
+
+DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT = (
+    "你是专业的 AI 图像和视频生成提示词决策助手。"
+    "先判断用户原始提示词是否真的需要优化，再决定是否改写。"
+    "如果原文已经清晰、信息密集、约束充分，包含明确构图/镜头/风格/保留/替换/不要等条件，"
+    "或者用户要求按原文、不要优化、不要改写、保持提示词，则 should_optimize=false。"
+    "只有原文过短、过泛、缺少画面描述，并且优化不会改变用户语义时，才 should_optimize=true。"
+    "优化时必须保留所有主体、动作、场景、风格、限制和细节，不能摘要、不能压缩、不能删减关键条件。"
+    "如果用户语义上要求生成多张图片，请把数量写入 image_count；没有明确要求则 image_count=null。"
+    "prompt 字段只写给生成模型的一条提示词，不要包含“生成几张/输出几张/返回几张”这类数量指令。"
+    "只输出 JSON，不要 Markdown。格式："
+    "{\"should_optimize\":true,\"image_count\":null,\"image_count_explicit\":false,"
+    "\"prompt\":\"最终提示词\",\"reason\":\"简短原因\"}"
 )
 
 DEFAULT_IMAGE_EDIT_PLAN_SYSTEM_PROMPT = (
@@ -51,23 +65,26 @@ DEFAULT_IMAGE_EDIT_PLAN_SYSTEM_PROMPT = (
     "保留基础图的背景、构图、氛围、动作、光线和镜头关系；"
     "将基础图中的目标人物或物体按用户指定关系替换为参考图中的角色身份与外观特征，"
     "包括眼睛、脸型、发型、身材、服装、材质和显著特征；多张参考图要逐一说明用途并保持自然融合。"
+    "如果用户语义上要求生成多张结果图，请把数量写入 output_image_count；没有明确要求则为 null。"
+    "prompt 字段不要包含“生成几张/输出几张/返回几张”这类结果数量指令。"
     "只输出 JSON，不要 Markdown。格式："
     "{\"requires_current_images\":true,\"required_image_count\":2,"
     "\"should_plan\":true,\"allow_cached_single_image\":false,"
     "\"prompt\":\"最终图生图提示词\",\"primary_image_index\":1,"
-    "\"reference_image_indexes\":[2,3],\"summary\":\"一句话说明理解结果\","
+    "\"reference_image_indexes\":[2,3],\"output_image_count\":null,"
+    "\"summary\":\"一句话说明理解结果\","
     "\"reason\":\"简短原因\"}"
 )
 
 try:
     from . import adapters
-    from .media import extract_media, download_to_file
+    from .media import extract_all_media, download_to_file
 except ImportError:
     import adapters
-    from media import extract_media, download_to_file
+    from media import extract_all_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.1.9",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.2.0",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -118,10 +135,12 @@ class ImageGenPlugin(Star):
             yield event.plain_result("❌ 请提供提示词，例如: /画 文 一只猫")
             event.stop_event()
             return
-        prompt, prompt_notice = await self._prepare_prompt(prompt, "文生图")
+        prompt, prompt_notice, output_count = await self._prepare_image_prompt(
+            prompt, "文生图"
+        )
         if prompt_notice:
             yield event.plain_result(prompt_notice)
-        yield await self._do_text_to_image(event, prompt)
+        yield await self._do_text_to_image(event, prompt, output_count)
 
     @image_group.command("图", alias={"图生图", "img2img"})
     async def image_to_image(self, event: AstrMessageEvent, prompt: str = ""):
@@ -135,8 +154,18 @@ class ImageGenPlugin(Star):
             yield event.plain_result("❌ 请提供提示词，例如: /画 图 改成水彩")
             event.stop_event()
             return
+        requested_output_count = self._requested_output_count(prompt)
         current_image_items = await self._get_current_image_items(event)
         image_intent = await self._plan_image_edit_once(prompt, current_image_items)
+        output_count = (
+            self._to_positive_int(image_intent.get("output_image_count"))
+            or requested_output_count
+        )
+        generation_prompt = (
+            self._strip_requested_output_count(prompt, output_count)
+            if output_count
+            else prompt
+        )
         image_ref_error = self._image_intent_error(
             image_intent, len(current_image_items)
         )
@@ -165,11 +194,11 @@ class ImageGenPlugin(Star):
             return
         if using_cached_image:
             prompt, prompt_notice, image_items = await self._prepare_planned_image_edit(
-                prompt, image_items, image_intent
+                generation_prompt, image_items, image_intent
             )
         else:
             prompt, prompt_notice, image_items = await self._prepare_planned_image_edit(
-                prompt, image_items, image_intent
+                generation_prompt, image_items, image_intent
             )
         if prompt_notice:
             yield event.plain_result(prompt_notice)
@@ -182,6 +211,7 @@ class ImageGenPlugin(Star):
             [item["bytes"] for item in image_items],
             [item["filename"] for item in image_items],
             strategy,
+            output_count,
         )
 
     @image_group.command("视频", alias={"文生视频", "txt2video"})
@@ -316,7 +346,10 @@ class ImageGenPlugin(Star):
             or options_cfg.get("prompt_enhance_system_prompt")
             or legacy_cfg.get("system_prompt")
         )
-        if not prompt or str(prompt).strip() == LEGACY_PROMPT_ENHANCE_SYSTEM_PROMPT:
+        if not prompt or str(prompt).strip() in {
+            LEGACY_PROMPT_ENHANCE_SYSTEM_PROMPT,
+            PREVIOUS_PROMPT_ENHANCE_SYSTEM_PROMPT,
+        }:
             return DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT
         return prompt
 
@@ -382,44 +415,175 @@ class ImageGenPlugin(Star):
 
     async def _prepare_prompt(self, prompt: str, task_name: str) -> tuple:
         """可选地用 chat completions 优化提示词；失败时回退原文。"""
+        final_prompt, notice, _count = await self._prepare_prompt_details(
+            prompt, task_name, allow_image_count=False
+        )
+        return final_prompt, notice
+
+    async def _prepare_image_prompt(self, prompt: str, task_name: str) -> tuple:
+        """准备图片生成提示词，同时解析用户语义里的输出张数。"""
+        return await self._prepare_prompt_details(
+            prompt, task_name, allow_image_count=True
+        )
+
+    async def _prepare_prompt_details(
+        self, prompt: str, task_name: str, allow_image_count: bool = False
+    ) -> tuple:
+        """返回 (最终提示词, 可发送说明, 输出图片数量或 None)。"""
         original = (prompt or "").strip()
-        if not original or not self._prompt_enhance_enabled:
-            return original, None
+        output_count = (
+            self._requested_output_count(original) if allow_image_count else None
+        )
+        source_prompt = (
+            self._strip_requested_output_count(original, output_count)
+            if output_count
+            else original
+        )
+        source_prompt = self._strip_prompt_control_phrases(source_prompt)
+        if not original:
+            return "", None, output_count
+        if not self._prompt_enhance_enabled or self._prompt_requests_no_enhancement(original):
+            return source_prompt, None, output_count
 
         chat_cfg = self._chat_cfg_for_prompt_tools(self._prompt_enhance_system_prompt)
         if not chat_cfg.get("base_url"):
-            return original, None
+            return source_prompt, None, output_count
 
         rewrite_prompt = (
             f"任务类型：{task_name}\n"
             f"用户原始提示词：{original}\n"
-            "请输出优化后的最终提示词。"
+            f"已本地解析到的输出图片数量：{output_count if output_count else 'null'}\n"
+            "请先判断是否需要优化提示词，并识别用户是否明确要求生成多张图片。\n"
+            "如果原文已经足够好、约束明确，或优化会改变/丢失用户原意，请不要优化。\n"
+            "prompt 字段不要包含生成数量指令，数量只放在 image_count。\n"
+            "请输出严格 JSON，字段包含："
+            "should_optimize, image_count, image_count_explicit, prompt, reason。"
         )
         try:
             resp = await adapters.openai_chat(
                 chat_cfg, rewrite_prompt, timeout=self._timeout, proxy=self._proxy
             )
-            enhanced = self._clean_prompt_text(self._extract_chat_text(resp))
+            enhanced_text = self._extract_chat_text(resp)
+            enhanced, should_optimize, output_count = (
+                self._normalize_prompt_enhancement(
+                    enhanced_text,
+                    source_prompt,
+                    output_count,
+                    allow_image_count,
+                )
+            )
         except Exception as e:
             logger.warning(f"提示词优化失败，使用原提示词: {e}")
-            return original, None
+            return source_prompt, None, output_count
 
         if not enhanced:
             logger.warning(f"提示词优化响应未提取到文本: {resp}")
-            return original, None
-        if self._is_prompt_enhancement_degraded(original, enhanced):
+            return source_prompt, None, output_count
+        if not should_optimize:
+            return enhanced, None, output_count
+        if self._is_prompt_enhancement_degraded(source_prompt, enhanced):
             logger.warning(
                 "提示词优化结果过短或疑似丢失细节，使用原提示词: "
-                f"original={original!r}, enhanced={enhanced!r}"
+                f"original={source_prompt!r}, enhanced={enhanced!r}"
             )
-            return original, None
+            return source_prompt, None, output_count
 
         notice = (
             f"✨ 优化后的提示词：\n{enhanced}"
             if self._prompt_enhance_show_prompt
             else None
         )
-        return enhanced, notice
+        return enhanced, notice, output_count
+
+    @staticmethod
+    def _prompt_requests_no_enhancement(prompt: str) -> bool:
+        prompt = prompt or ""
+        markers = (
+            "不要优化",
+            "不用优化",
+            "无需优化",
+            "别优化",
+            "不要改写",
+            "不用改写",
+            "别改写",
+            "按原文",
+            "使用原文",
+            "保持原提示词",
+            "原提示词不变",
+            "do not optimize",
+            "no optimize",
+            "no rewrite",
+            "keep prompt",
+        )
+        lower = prompt.lower()
+        return any(marker in lower for marker in markers)
+
+    @staticmethod
+    def _strip_prompt_control_phrases(prompt: str) -> str:
+        text = prompt or ""
+        controls = (
+            "不要优化",
+            "不用优化",
+            "无需优化",
+            "别优化",
+            "不要改写",
+            "不用改写",
+            "别改写",
+            "按原文",
+            "使用原文",
+            "保持原提示词",
+            "原提示词不变",
+            "do not optimize",
+            "no optimize",
+            "no rewrite",
+            "keep prompt",
+        )
+        for control in controls:
+            text = re.sub(re.escape(control), "", text, flags=re.I)
+        text = re.sub(r"\s{2,}", " ", text)
+        text = re.sub(r"^[\s,，;；:：、。]+", "", text)
+        text = re.sub(r"[\s,，;；:：、。]+$", "", text)
+        return text.strip() or (prompt or "").strip()
+
+    def _normalize_prompt_enhancement(
+        self,
+        text: str,
+        fallback_prompt: str,
+        fallback_count,
+        allow_image_count: bool,
+    ) -> tuple:
+        data = self._extract_json_object(text)
+        if data:
+            should_optimize = self._json_bool(
+                data.get(
+                    "should_optimize",
+                    data.get("optimize", data.get("should_enhance", True)),
+                ),
+                True,
+            )
+            output_count = fallback_count
+            if allow_image_count:
+                output_count = self._output_count_from_mapping(data, fallback_count)
+
+            candidate = self._clean_prompt_text(
+                data.get("prompt")
+                or data.get("final_prompt")
+                or data.get("optimized_prompt")
+                or data.get("enhanced_prompt")
+                or ""
+            )
+            if output_count and candidate:
+                candidate = self._strip_requested_output_count(candidate, output_count)
+            if candidate:
+                candidate = self._strip_prompt_control_phrases(candidate)
+            return candidate or fallback_prompt, should_optimize, output_count
+
+        candidate = self._clean_prompt_text(text)
+        if fallback_count and candidate:
+            candidate = self._strip_requested_output_count(candidate, fallback_count)
+        if candidate:
+            candidate = self._strip_prompt_control_phrases(candidate)
+        return candidate or fallback_prompt, True, fallback_count
 
     @staticmethod
     def _is_prompt_enhancement_degraded(original: str, enhanced: str) -> bool:
@@ -436,6 +600,142 @@ class ImageGenPlugin(Star):
     @staticmethod
     def _prompt_signal_len(text: str) -> int:
         return len(re.sub(r"\s+", "", text or ""))
+
+    @staticmethod
+    def _json_bool(value, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on", "是", "需要", "优化"}:
+            return True
+        if text in {"0", "false", "no", "off", "否", "不", "不需要", "不要"}:
+            return False
+        return default
+
+    @staticmethod
+    def _clamp_output_count(count) -> int:
+        try:
+            return max(1, min(10, int(count)))
+        except (TypeError, ValueError):
+            return None
+
+    def _output_count_from_mapping(self, data: dict, fallback_count=None):
+        if not isinstance(data, dict):
+            return fallback_count
+        count = None
+        for key in (
+            "image_count",
+            "output_image_count",
+            "n",
+            "count",
+            "num_images",
+            "number_of_images",
+        ):
+            if key in data:
+                count = self._to_positive_int(data.get(key))
+                break
+        if count is None:
+            return fallback_count
+
+        count = self._clamp_output_count(count)
+        explicit = self._json_bool(
+            data.get(
+                "image_count_explicit",
+                data.get("output_image_count_explicit", False),
+            ),
+            False,
+        )
+        if fallback_count is not None and count == 1 and not explicit:
+            return fallback_count
+        if count == 1 and fallback_count is None and not explicit:
+            return None
+        return count
+
+    @classmethod
+    def _requested_output_count(cls, prompt: str):
+        matches = cls._output_count_matches(prompt)
+        if not matches:
+            return None
+        return cls._clamp_output_count(matches[-1][0])
+
+    @classmethod
+    def _strip_requested_output_count(cls, prompt: str, count=None) -> str:
+        text = prompt or ""
+        matches = cls._output_count_matches(text)
+        if count:
+            matches = [match for match in matches if match[0] == count]
+        for _match_count, start, end in reversed(matches):
+            text = text[:start] + text[end:]
+        text = re.sub(r"\s{2,}", " ", text)
+        text = re.sub(r"^[\s,，;；:：、。]+", "", text)
+        text = re.sub(r"[\s,，;；:：、。]+$", "", text)
+        return text.strip() or (prompt or "").strip()
+
+    @classmethod
+    def _output_count_matches(cls, prompt: str) -> list:
+        prompt = prompt or ""
+        num = r"(?P<num>\d{1,2}|[一二两三四五六七八九十])"
+        patterns = (
+            rf"(?i)\b(?:n|num|count)\s*[:=：]\s*(?P<num>\d{{1,2}})\b",
+            rf"(?:数量|张数|图片数|生成数量)\s*(?:[:=：为是]\s*)?{num}\s*(?:张|幅|个|份|版)?",
+            rf"{num}\s*(?:张|幅|个|份|版)\s*(?:图|图片|照片|图像|画|插画|海报|壁纸|头像|表情包)",
+            rf"(?:生成|输出|返回|来|出|做|给我|帮我|我要|想要|要|弄|整|发)\s*"
+            rf"(?:一共|总共|至少|大概|约)?\s*{num}\s*(?:张|幅|个|份|版)"
+            rf"(?:\s*(?:图|图片|照片|图像|画|插画|海报|壁纸|头像|表情包))?",
+            rf"(?:画|绘制|制作|创建)\s*"
+            rf"(?:一共|总共|至少|大概|约)?\s*{num}\s*(?:张|幅|个|份|版)",
+            rf"(?:画|绘制|制作|创建)\s*{num}\s*(?:张|幅|个|份|版)\s*"
+            rf"(?:图|图片|照片|图像|画|插画|海报|壁纸|头像|表情包)",
+        )
+        matches = []
+        for pattern in patterns:
+            for match in re.finditer(pattern, prompt):
+                count = cls._parse_count_text(match.group("num"))
+                count = cls._clamp_output_count(count)
+                if count:
+                    matches.append((count, match.start(), match.end()))
+        matches.sort(key=lambda item: (item[1], item[2]))
+        deduped = []
+        seen = set()
+        for item in matches:
+            key = (item[1], item[2])
+            if key not in seen:
+                deduped.append(item)
+                seen.add(key)
+        return deduped
+
+    @staticmethod
+    def _parse_count_text(value):
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return int(value)
+        text = str(value).strip()
+        if re.fullmatch(r"\d{1,2}", text):
+            return int(text)
+        return ImageGenPlugin._parse_zh_int(text)
+
+    @staticmethod
+    def _parse_zh_int(text: str):
+        text = (text or "").strip()
+        values = {
+            "一": 1,
+            "二": 2,
+            "两": 2,
+            "三": 3,
+            "四": 4,
+            "五": 5,
+            "六": 6,
+            "七": 7,
+            "八": 8,
+            "九": 9,
+            "十": 10,
+        }
+        return values.get(text)
 
     async def _plan_image_edit_once(self, prompt: str, current_image_items: list) -> dict:
         """用一次 Chat 完成图生图意图判断、图片选择和提示词规划。"""
@@ -462,7 +762,7 @@ class ImageGenPlugin(Star):
             "请输出严格 JSON。字段必须包含："
             "requires_current_images, required_image_count, should_plan, "
             "allow_cached_single_image, prompt, primary_image_index, "
-            "reference_image_indexes, summary, reason。"
+            "reference_image_indexes, output_image_count, summary, reason。"
         )
         image_bytes = [item["bytes"] for item in current_image_items]
         image_names = [item["filename"] for item in current_image_items]
@@ -554,6 +854,13 @@ class ImageGenPlugin(Star):
             or plan.get("rewritten_prompt")
             or ""
         )
+        output_count = self._output_count_from_mapping(
+            plan, fallback.get("output_image_count")
+        )
+        if output_count:
+            normalized["output_image_count"] = output_count
+            if prompt:
+                prompt = self._strip_requested_output_count(prompt, output_count)
         if prompt and (normalized.get("should_plan") or self._prompt_enhance_enabled):
             normalized["prompt"] = prompt
 
@@ -598,6 +905,7 @@ class ImageGenPlugin(Star):
         return {
             "requires_current_images": requires_current,
             "required_image_count": max(1, min(10, required)),
+            "output_image_count": self._requested_output_count(prompt),
             "should_plan": should_plan,
             "allow_cached_single_image": not requires_current,
             "reason": "fallback",
@@ -752,9 +1060,12 @@ class ImageGenPlugin(Star):
         if isinstance(value, (int, float)):
             return int(value) if int(value) > 0 else default
         match = re.search(r"\d+", str(value))
-        if not match:
+        if match:
+            number = int(match.group(0))
+            return number if number > 0 else default
+        number = ImageGenPlugin._parse_zh_int(str(value))
+        if not number:
             return default
-        number = int(match.group(0))
         return number if number > 0 else default
 
     @staticmethod
@@ -1114,9 +1425,19 @@ class ImageGenPlugin(Star):
                 }]
         return []
 
+    @staticmethod
+    def _cfg_with_output_count(cfg: dict, output_count=None) -> dict:
+        cfg = dict(cfg or {})
+        count = ImageGenPlugin._clamp_output_count(output_count)
+        if count:
+            cfg["n"] = count
+        return cfg
+
     # ---- 文生图 ----
-    async def _do_text_to_image(self, event, prompt):
-        cfg = self._cfg("adapter_image_generation")
+    async def _do_text_to_image(self, event, prompt, output_count=None):
+        cfg = self._cfg_with_output_count(
+            self._cfg("adapter_image_generation"), output_count
+        )
         try:
             resp = await adapters.image_generation(
                 cfg, prompt, self._timeout, proxy=self._proxy
@@ -1126,9 +1447,13 @@ class ImageGenPlugin(Star):
         return await self._send_result(event, resp, "文生图")
 
     # ---- 图生图 ----
-    async def _do_image_to_image(self, event, prompt, img_bytes, img_name, strategy):
+    async def _do_image_to_image(
+        self, event, prompt, img_bytes, img_name, strategy, output_count=None
+    ):
         if strategy == "image_generation":
-            cfg = self._cfg("adapter_image_generation")
+            cfg = self._cfg_with_output_count(
+                self._cfg("adapter_image_generation"), output_count
+            )
             try:
                 resp = await adapters.image_generation(
                     cfg, prompt, self._timeout, img_bytes, img_name, self._proxy
@@ -1137,7 +1462,7 @@ class ImageGenPlugin(Star):
                 return event.plain_result(f"❌ {e}")
             return await self._send_result(event, resp, "图生图")
 
-        cfg = self._cfg("adapter_image_edits")
+        cfg = self._cfg_with_output_count(self._cfg("adapter_image_edits"), output_count)
         try:
             resp = await adapters.image_edits(
                 cfg, prompt, img_bytes, img_name, self._timeout, self._proxy
@@ -1186,17 +1511,29 @@ class ImageGenPlugin(Star):
 
     # ---- 通用：解析并发送媒体 ----
     async def _send_result(self, event, resp, task_name, expect=None):
-        media = extract_media(resp)
-        if not media:
+        medias = extract_all_media(resp)
+        if not medias:
             logger.warning(f"{task_name} 响应未提取到媒体: {resp}")
             return event.plain_result(f"❌ {task_name}成功但响应中未找到图片/视频。")
+
+        if len(medias) == 1:
+            return await self._send_single_media(event, medias[0], task_name, expect)
+
+        chain = []
+        stem = self._stem(event)
+        for index, media in enumerate(medias, start=1):
+            item = await self._media_to_component(
+                event, media, task_name, expect, f"{stem}_{index}"
+            )
+            if isinstance(item, str):
+                return event.plain_result(item)
+            chain.append(item)
+
+        return event.chain_result(chain)
+
+    async def _send_single_media(self, event, media, task_name, expect=None):
         kind, value = media
-        if expect == "video" and kind != "video":
-            if self._looks_like_video_fallback(value):
-                kind = "video"
-            else:
-                # 当期望视频但明确拿到图片时，仍按图片发送（兜底）
-                logger.info(f"{task_name} 期望视频但接口返回图片，按图片发送。")
+        kind = self._effective_media_kind(kind, value, task_name, expect)
 
         # 双容器(Docker)部署下：AstrBot 容器里的本地文件 file:// 路径
         # NapCat 容器读不到(ENOENT)。所以只要拿到的是公网 URL，就优先 fromURL 直发，
@@ -1224,6 +1561,38 @@ class ImageGenPlugin(Star):
         else:
             self._remember_last_image(event, path, os.path.basename(path), source=task_name)
             return event.image_result(path)
+
+    async def _media_to_component(
+        self, event, media, task_name, expect=None, stem: str = None
+    ):
+        kind, value = media
+        kind = self._effective_media_kind(kind, value, task_name, expect)
+
+        if isinstance(value, str) and value.startswith("http"):
+            if kind == "video":
+                return Comp.Video.fromURL(url=value)
+            self._remember_last_image(event, value, "generated.png", source=task_name)
+            return Comp.Image.fromURL(url=value)
+
+        try:
+            kind2, path = await download_to_file(
+                value, self._save_dir, stem or self._stem(event), self._timeout,
+                self._proxy
+            )
+        except Exception as e:
+            return f"❌ 媒体下载失败: {e}"
+        kind = kind2 or kind
+        if kind == "video":
+            return Comp.Video.fromFileSystem(path=path)
+        self._remember_last_image(event, path, os.path.basename(path), source=task_name)
+        return Comp.Image.fromFileSystem(path=path)
+
+    def _effective_media_kind(self, kind: str, value: str, task_name: str, expect=None):
+        if expect == "video" and kind != "video":
+            if self._looks_like_video_fallback(value):
+                return "video"
+            logger.info(f"{task_name} 期望视频但接口返回图片，按图片发送。")
+        return kind
 
     @staticmethod
     def _looks_like_video_fallback(value: str) -> bool:

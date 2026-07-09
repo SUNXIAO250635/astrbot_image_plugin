@@ -46,13 +46,25 @@ def _kind_from_key_url(key: str, url: str, default: str = "") -> str:
 
 
 def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
-    """从各种接口的 JSON 响应里提取 (kind, value)。
+    """从各种接口的 JSON 响应里提取第一条 (kind, value)。"""
+    medias = extract_all_media(resp_json)
+    return medias[0] if medias else None
+
+
+def extract_all_media(resp_json: dict) -> list[Tuple[str, str]]:
+    """从各种接口的 JSON 响应里提取所有 (kind, value)。
 
     value 可以是 http(s) URL 或 data: URI(base64)。
     兜底覆盖 OpenAI images / image-edits / video / chat completions 几种常见结构。
     """
     if not isinstance(resp_json, dict):
-        return None
+        return []
+
+    medias = []
+
+    def add(kind: str, value: str):
+        if value and (kind, value) not in medias:
+            medias.append((kind, value))
 
     # 1) data: [...] 数组（OpenAI images / video 风格）
     data = resp_json.get("data")
@@ -60,26 +72,37 @@ def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
         for item in data:
             # 有些接口直接返回 data[0] = "https://..."
             if isinstance(item, str) and item.startswith("http"):
-                return _kind_from_url(item), item
+                add(_kind_from_url(item), item)
+                continue
+            if isinstance(item, str) and item.startswith("data:"):
+                m = _BASE64_RE.match(item)
+                if m:
+                    add("image" if m.group(1) == "image" else "video", item)
+                continue
             if not isinstance(item, dict):
                 continue
             for key in ("video_url", "image_url", "url"):
                 url = item.get(key)
                 if isinstance(url, str) and url.startswith("http"):
-                    return _kind_from_key_url(key, url), url
+                    add(_kind_from_key_url(key, url), url)
+                    break
             b64 = item.get("b64_json") or item.get("b64")
             if b64:
-                return "image", f"data:image/png;base64,{b64}"
+                add("image", f"data:image/png;base64,{b64}")
+        if medias:
+            return medias
 
     # 2) 顶层 url / video_url / image_url
     for key in ("video_url", "image_url", "url", "video", "output"):
         v = resp_json.get(key)
         if isinstance(v, str) and v.startswith("http"):
-            return _kind_from_key_url(key, v), v
+            add(_kind_from_key_url(key, v), v)
+            return medias
         if isinstance(v, str) and "base64" in v:
             m = _BASE64_RE.match(v)
             if m:
-                return ("image" if m.group(1) == "image" else "video"), v
+                add("image" if m.group(1) == "image" else "video", v)
+                return medias
 
     # 2.5) newapi 渠道视频轮询结果结构：
     #   {"code":"success","data":{"status":"SUCCESS","result_url":"https://...mp4",
@@ -90,7 +113,8 @@ def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
             v = data_obj.get(key)
             if isinstance(v, str) and v.startswith("http"):
                 default = "video" if key == "result_url" else ""
-                return _kind_from_key_url(key, v, default), v
+                add(_kind_from_key_url(key, v, default), v)
+                return medias
         inner = data_obj.get("data") if isinstance(data_obj.get("data"), dict) else None
         if inner:
             content = inner.get("content") if isinstance(inner.get("content"), dict) else None
@@ -98,11 +122,13 @@ def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
                 for key in ("video_url", "image_url", "url"):
                     v = content.get(key)
                     if isinstance(v, str) and v.startswith("http"):
-                        return _kind_from_key_url(key, v), v
+                        add(_kind_from_key_url(key, v), v)
+                        return medias
             for key in ("video_url", "image_url", "url"):
                 v = inner.get(key)
                 if isinstance(v, str) and v.startswith("http"):
-                    return _kind_from_key_url(key, v), v
+                    add(_kind_from_key_url(key, v), v)
+                    return medias
 
     # 3) chat completions：从 choices[0].message.content 文本里提取 URL
     choices = resp_json.get("choices")
@@ -111,9 +137,9 @@ def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
         content = msg.get("content") if isinstance(msg, dict) else None
         text = _content_to_text(content)
         if text:
-            return _extract_from_text(text)
+            return _extract_all_from_text(text)
 
-    return None
+    return medias
 
 
 def _content_to_text(content) -> str:
@@ -134,24 +160,37 @@ def _content_to_text(content) -> str:
 
 def _extract_from_text(text: str) -> Optional[Tuple[str, str]]:
     """从 chat 回复文本中提取第一个媒体 URL 或 base64。"""
-    m = _BASE64_RE.search(text)
-    if m:
-        return ("image" if m.group(1) == "image" else "video"), m.group(0)
+    medias = _extract_all_from_text(text)
+    return medias[0] if medias else None
+
+
+def _extract_all_from_text(text: str) -> list[Tuple[str, str]]:
+    """从 chat 回复文本中提取所有媒体 URL 或 base64。"""
+    medias = []
+    seen_values = set()
+
+    def add(kind: str, value: str):
+        if value and value not in seen_values:
+            medias.append((kind, value))
+            seen_values.add(value)
+
+    for m in _BASE64_RE.finditer(text):
+        add("image" if m.group(1) == "image" else "video", m.group(0))
     for url in _MEDIA_RE.findall(text):
         # markdown 链接里可能尾随 ) ，清理
         url = url.rstrip(",);")
         if any(url.lower().endswith(e) for e in VIDEO_EXTS):
-            return "video", url
+            add("video", url)
     for url in _MEDIA_RE.findall(text):
         url = url.rstrip(",);")
         if any(url.lower().endswith(e) for e in IMAGE_EXTS):
-            return "image", url
+            add("image", url)
     # 退而求其次：任意 http 链接都按图片
     for url in _MEDIA_RE.findall(text):
         url = url.rstrip(",);")
         if url.startswith("http"):
-            return "image", url
-    return None
+            add("image", url)
+    return medias
 
 
 async def download_to_file(

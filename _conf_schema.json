@@ -67,6 +67,11 @@
         "type": "string",
         "default": "1024x1024",
         "hint": "可手填任意尺寸"
+      },
+      "n": {
+        "description": "生成数量",
+        "type": "int",
+        "default": 1
       }
     }
   },
@@ -193,10 +198,10 @@
         "hint": "旧版模型覆盖项；优先级高于 adapter_prompt_chat.model。新配置建议直接填写 adapter_prompt_chat.model；留空时使用 adapter_prompt_chat.model 或 adapter_openai_chat.model。"
       },
       "prompt_enhance_enabled": {
-        "description": "是否先用 adapter_prompt_chat 优化提示词",
+        "description": "是否让 adapter_prompt_chat 语义判断并优化提示词",
         "type": "bool",
         "default": true,
-        "hint": "开启后，文生图/图生图/文生视频/图生视频都会先调用 chat completions 改写提示词；如果 adapter_prompt_chat 未填写，会兼容使用 adapter_openai_chat；如果 chat 失败会自动使用原提示词继续生成。"
+        "hint": "开启后，文生图/图生图/文生视频/图生视频都会先调用 chat completions 判断是否需要优化；如果原文已经足够好或优化会反向丢细节，会直接使用原文。adapter_prompt_chat 留空时兼容使用 adapter_openai_chat；chat 失败会自动使用原提示词继续生成。"
       },
       "prompt_enhance_show_prompt": {
         "description": "是否发送优化后的提示词",
@@ -207,8 +212,8 @@
       "prompt_enhance_system_prompt": {
         "description": "提示词优化系统提示词",
         "type": "text",
-        "default": "你是专业的 AI 图像和视频生成提示词优化助手。请把用户需求扩写成适合图像/视频生成模型的高质量中文提示词。必须保留用户原文中的所有主体、动作、场景、风格、限制和细节，不能摘要、不能压缩、不能删减关键条件。在不改变原意的前提下补充主体外观、场景环境、构图、镜头、光线、色彩、材质、氛围、细节和画面质量描述。输出应比原始提示词更具体、更信息密集；原文较短时通常扩写到 80-180 个中文字符，原文较长时不要明显短于原文。不要输出解释、标题、编号、引号或 Markdown，只输出最终提示词。",
-        "hint": "只影响提示词优化步骤；不会覆盖 adapter_prompt_chat 或 adapter_openai_chat 的原配置。"
+        "default": "你是专业的 AI 图像和视频生成提示词决策助手。先判断用户原始提示词是否真的需要优化，再决定是否改写。如果原文已经清晰、信息密集、约束充分，包含明确构图/镜头/风格/保留/替换/不要等条件，或者用户要求按原文、不要优化、不要改写、保持提示词，则 should_optimize=false。只有原文过短、过泛、缺少画面描述，并且优化不会改变用户语义时，才 should_optimize=true。优化时必须保留所有主体、动作、场景、风格、限制和细节，不能摘要、不能压缩、不能删减关键条件。如果用户语义上要求生成多张图片，请把数量写入 image_count；没有明确要求则 image_count=null。prompt 字段只写给生成模型的一条提示词，不要包含“生成几张/输出几张/返回几张”这类数量指令。只输出 JSON，不要 Markdown。格式：{\"should_optimize\":true,\"image_count\":null,\"image_count_explicit\":false,\"prompt\":\"最终提示词\",\"reason\":\"简短原因\"}",
+        "hint": "只影响提示词优化步骤；默认要求 Chat 输出 JSON，包含是否优化、最终提示词和图片数量。不会覆盖 adapter_prompt_chat 或 adapter_openai_chat 的原配置。"
       },
       "image_edit_plan_enabled": {
         "description": "是否用 Chat 理解自然语言图生图需求",
@@ -231,8 +236,8 @@
       "image_edit_plan_system_prompt": {
         "description": "图生图自然语言理解系统提示词",
         "type": "text",
-        "default": "你是专业的图像编辑需求理解助手。用户会给出一段自然语言，可能同时带有按顺序编号的图片。请一次性完成意图判断、图片引用关系分析和最终图生图提示词改写。请理解“上一张/刚才那张/第一张图/第二张图/第 N 张图/基底/参考/替换/保留/角色特征”等指代关系。普通单图编辑可以允许使用上一张缓存；凡是用户语义上引用多张图、编号图片、参考图、基础图、替换对象、组合/融合多个来源，都必须使用当前同一条消息里的图片，不能从聊天记录拼接。如果用户要求以某一张为基础、用其他图片替换人物或参考角色特征，提示词必须明确：保留基础图的背景、构图、氛围、动作、光线和镜头关系；将基础图中的目标人物或物体按用户指定关系替换为参考图中的角色身份与外观特征，包括眼睛、脸型、发型、身材、服装、材质和显著特征；多张参考图要逐一说明用途并保持自然融合。只输出 JSON，不要 Markdown。格式：{\"requires_current_images\":true,\"required_image_count\":2,\"should_plan\":true,\"allow_cached_single_image\":false,\"prompt\":\"最终图生图提示词\",\"primary_image_index\":1,\"reference_image_indexes\":[2,3],\"summary\":\"一句话说明理解结果\",\"reason\":\"简短原因\"}",
-        "hint": "只影响自然语言图生图理解步骤；该步骤会同时输出是否必须当前消息附图、需要几张图、图片编号选择和最终提示词。"
+        "default": "你是专业的图像编辑需求理解助手。用户会给出一段自然语言，可能同时带有按顺序编号的图片。请一次性完成意图判断、图片引用关系分析和最终图生图提示词改写。请理解“上一张/刚才那张/第一张图/第二张图/第 N 张图/基底/参考/替换/保留/角色特征”等指代关系。普通单图编辑可以允许使用上一张缓存；凡是用户语义上引用多张图、编号图片、参考图、基础图、替换对象、组合/融合多个来源，都必须使用当前同一条消息里的图片，不能从聊天记录拼接。如果用户要求以某一张为基础、用其他图片替换人物或参考角色特征，提示词必须明确：保留基础图的背景、构图、氛围、动作、光线和镜头关系；将基础图中的目标人物或物体按用户指定关系替换为参考图中的角色身份与外观特征，包括眼睛、脸型、发型、身材、服装、材质和显著特征；多张参考图要逐一说明用途并保持自然融合。如果用户语义上要求生成多张结果图，请把数量写入 output_image_count；没有明确要求则为 null。prompt 字段不要包含“生成几张/输出几张/返回几张”这类结果数量指令。只输出 JSON，不要 Markdown。格式：{\"requires_current_images\":true,\"required_image_count\":2,\"should_plan\":true,\"allow_cached_single_image\":false,\"prompt\":\"最终图生图提示词\",\"primary_image_index\":1,\"reference_image_indexes\":[2,3],\"output_image_count\":null,\"summary\":\"一句话说明理解结果\",\"reason\":\"简短原因\"}",
+        "hint": "只影响自然语言图生图理解步骤；该步骤会同时输出是否必须当前消息附图、需要几张参考图、图片编号选择、结果图数量和最终提示词。"
       }
     }
   },
