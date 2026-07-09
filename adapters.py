@@ -14,8 +14,23 @@ class ApiException(Exception):
     pass
 
 
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
+)
+
+
 def _auth_headers(api_key: str) -> dict:
     return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
+def _with_default_headers(headers: dict, **extra) -> dict:
+    return {
+        "User-Agent": DEFAULT_USER_AGENT,
+        **(headers or {}),
+        **extra,
+    }
 
 
 def _join(base_url: str, path: str) -> str:
@@ -39,7 +54,7 @@ async def _get_json(
     import json as _json
 
     timeout_cfg = aiohttp.ClientTimeout(total=timeout)
-    headers = {**headers, "Accept": "application/json"}
+    headers = _with_default_headers(headers, Accept="application/json")
     proxy_kw = {"proxy": proxy} if proxy else {}
     async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
         async with session.get(url, headers=headers, **proxy_kw) as resp:
@@ -58,7 +73,9 @@ async def _post_json(
     import json as _json
 
     timeout_cfg = aiohttp.ClientTimeout(total=timeout)
-    headers = {**headers, "Content-Type": "application/json", "Accept": "application/json"}
+    headers = _with_default_headers(
+        headers, **{"Content-Type": "application/json", "Accept": "application/json"}
+    )
     proxy_kw = {"proxy": proxy} if proxy else {}
     async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
         async with session.post(url, headers=headers, json=payload, **proxy_kw) as resp:
@@ -88,6 +105,7 @@ async def _post_multipart(
             form.add_field(f[0], f[1], filename=f[2], content_type=f[3])
 
     timeout_cfg = aiohttp.ClientTimeout(total=timeout)
+    headers = _with_default_headers(headers, Accept="application/json")
     proxy_kw = {"proxy": proxy} if proxy else {}
     async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
         async with session.post(url, headers=headers, data=form, **proxy_kw) as resp:

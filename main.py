@@ -106,7 +106,7 @@ except ImportError:
     from media import extract_all_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.2.1",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.2.2",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -1610,14 +1610,67 @@ class ImageGenPlugin(Star):
             cfg["n"] = count
         return cfg
 
+    async def _complete_requested_media_count(
+        self, resp: dict, output_count, request_one, task_name: str
+    ) -> dict:
+        target = self._clamp_output_count(output_count)
+        if not target or target <= 1:
+            return resp
+
+        medias = extract_all_media(resp)
+        if len(medias) >= target:
+            return resp
+
+        logger.info(
+            f"{task_name} 请求 {target} 张，但首个响应只有 {len(medias)} 张，"
+            "尝试追加请求补齐。"
+        )
+        while len(medias) < target:
+            extra_resp = await request_one(1)
+            extra_medias = extract_all_media(extra_resp)
+            if not extra_medias:
+                logger.warning(f"{task_name} 追加请求未提取到媒体: {extra_resp}")
+                break
+            for media in extra_medias:
+                if media not in medias:
+                    medias.append(media)
+                if len(medias) >= target:
+                    break
+
+        if not medias:
+            return resp
+        return self._response_from_media_list(medias[:target])
+
+    @staticmethod
+    def _response_from_media_list(medias: list) -> dict:
+        data = []
+        for kind, value in medias:
+            if kind == "video":
+                data.append({"video_url": value})
+            elif isinstance(value, str) and value.startswith("data:"):
+                data.append(value)
+            else:
+                data.append({"url": value})
+        return {"data": data}
+
     # ---- 文生图 ----
     async def _do_text_to_image(self, event, prompt, output_count=None):
-        cfg = self._cfg_with_output_count(
-            self._cfg("adapter_image_generation"), output_count
-        )
+        base_cfg = self._cfg("adapter_image_generation")
+        cfg = self._cfg_with_output_count(base_cfg, output_count)
         try:
             resp = await adapters.image_generation(
                 cfg, prompt, self._timeout, proxy=self._proxy
+            )
+            resp = await self._complete_requested_media_count(
+                resp,
+                output_count,
+                lambda n: adapters.image_generation(
+                    self._cfg_with_output_count(base_cfg, n),
+                    prompt,
+                    self._timeout,
+                    proxy=self._proxy,
+                ),
+                "文生图",
             )
         except adapters.ApiException as e:
             return event.plain_result(f"❌ {e}")
@@ -1628,21 +1681,47 @@ class ImageGenPlugin(Star):
         self, event, prompt, img_bytes, img_name, strategy, output_count=None
     ):
         if strategy == "image_generation":
-            cfg = self._cfg_with_output_count(
-                self._cfg("adapter_image_generation"), output_count
-            )
+            base_cfg = self._cfg("adapter_image_generation")
+            cfg = self._cfg_with_output_count(base_cfg, output_count)
             try:
                 resp = await adapters.image_generation(
                     cfg, prompt, self._timeout, img_bytes, img_name, self._proxy
+                )
+                resp = await self._complete_requested_media_count(
+                    resp,
+                    output_count,
+                    lambda n: adapters.image_generation(
+                        self._cfg_with_output_count(base_cfg, n),
+                        prompt,
+                        self._timeout,
+                        img_bytes,
+                        img_name,
+                        self._proxy,
+                    ),
+                    "图生图",
                 )
             except adapters.ApiException as e:
                 return event.plain_result(f"❌ {e}")
             return await self._send_result(event, resp, "图生图")
 
-        cfg = self._cfg_with_output_count(self._cfg("adapter_image_edits"), output_count)
+        base_cfg = self._cfg("adapter_image_edits")
+        cfg = self._cfg_with_output_count(base_cfg, output_count)
         try:
             resp = await adapters.image_edits(
                 cfg, prompt, img_bytes, img_name, self._timeout, self._proxy
+            )
+            resp = await self._complete_requested_media_count(
+                resp,
+                output_count,
+                lambda n: adapters.image_edits(
+                    self._cfg_with_output_count(base_cfg, n),
+                    prompt,
+                    img_bytes,
+                    img_name,
+                    self._timeout,
+                    self._proxy,
+                ),
+                "图生图",
             )
         except adapters.ApiException as e:
             return event.plain_result(f"❌ {e}")
