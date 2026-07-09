@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import os
 import re
@@ -17,7 +18,7 @@ from urllib.parse import unquote, urlparse
 import aiohttp
 
 from astrbot.api import logger, AstrBotConfig
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 import astrbot.api.message_components as Comp
 
@@ -106,7 +107,7 @@ except ImportError:
     from media import extract_all_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.2.2",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.2.3",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -307,6 +308,21 @@ class ImageGenPlugin(Star):
     @property
     def _proxy(self) -> str:
         return (self.config.get("media", {}) or {}).get("proxy", "") or ""
+
+    @property
+    def _multi_media_send_mode(self) -> str:
+        value = str((self.config.get("media", {}) or {}).get(
+            "multi_media_send_mode", "sequential"
+        ) or "sequential").strip().lower()
+        return value if value in {"sequential", "chain"} else "sequential"
+
+    @property
+    def _multi_media_send_interval(self) -> float:
+        value = (self.config.get("media", {}) or {}).get("multi_media_send_interval", 0.8)
+        try:
+            return max(0.0, min(5.0, float(value)))
+        except (TypeError, ValueError):
+            return 0.8
 
     @property
     def _previous_image_enabled(self) -> bool:
@@ -1785,7 +1801,19 @@ class ImageGenPlugin(Star):
                 return event.plain_result(item)
             chain.append(item)
 
-        return event.chain_result(chain)
+        if self._multi_media_send_mode == "chain" or not hasattr(event, "send"):
+            return event.chain_result(chain)
+
+        try:
+            for item in chain[:-1]:
+                await event.send(MessageChain([item]))
+                if self._multi_media_send_interval:
+                    await asyncio.sleep(self._multi_media_send_interval)
+        except Exception as e:
+            logger.warning(f"{task_name} 多媒体逐条发送失败，回退消息链发送: {e}")
+            return event.chain_result(chain)
+
+        return event.chain_result([chain[-1]])
 
     async def _send_single_media(self, event, media, task_name, expect=None):
         kind, value = media

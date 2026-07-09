@@ -311,6 +311,22 @@
         "description": "HTTP 超时(秒)",
         "type": "int",
         "default": 300
+      },
+      "multi_media_send_mode": {
+        "description": "多图/多视频发送方式",
+        "type": "string",
+        "default": "sequential",
+        "options": [
+          "sequential",
+          "chain"
+        ],
+        "hint": "sequential 会把多张结果逐条发送，避免 aiocqhttp/NapCat 一次消息链发送多张远程图超时；chain 为旧行为。"
+      },
+      "multi_media_send_interval": {
+        "description": "逐条发送间隔(秒)",
+        "type": "float",
+        "default": 0.8,
+        "hint": "仅 multi_media_send_mode=sequential 时生效。范围会限制在 0 到 5 秒。"
       }
     }
   }
