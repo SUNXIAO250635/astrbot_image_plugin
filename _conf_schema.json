@@ -198,22 +198,28 @@
         "hint": "旧版模型覆盖项；优先级高于 adapter_prompt_chat.model。新配置建议直接填写 adapter_prompt_chat.model；留空时使用 adapter_prompt_chat.model 或 adapter_openai_chat.model。"
       },
       "prompt_enhance_enabled": {
-        "description": "是否让 adapter_prompt_chat 语义判断并优化提示词",
+        "description": "是否让 adapter_prompt_chat 先语义规划并按需优化提示词",
         "type": "bool",
         "default": true,
-        "hint": "开启后，文生图/图生图/文生视频/图生视频都会先调用 chat completions 判断是否需要优化；如果原文已经足够好或优化会反向丢细节，会直接使用原文。adapter_prompt_chat 留空时兼容使用 adapter_openai_chat；chat 失败会自动使用原提示词继续生成。"
+        "hint": "开启后，先调用 chat completions 做语义规划：是否优化、生成几张、清理后的原始提示词；只有规划结果需要优化时，才第二次调用 chat completions 优化。adapter_prompt_chat 留空时兼容使用 adapter_openai_chat；chat 失败会自动使用原提示词继续生成。"
       },
       "prompt_enhance_show_prompt": {
         "description": "是否发送优化后的提示词",
         "type": "bool",
         "default": true,
-        "hint": "开启后，生成前会先把优化后的提示词发到当前会话。"
+        "hint": "只有第二步真的执行了提示词优化时才会发送；语义规划判断不需要优化时不会发送“优化后的提示词”。"
+      },
+      "prompt_plan_system_prompt": {
+        "description": "提示词语义规划系统提示词",
+        "type": "text",
+        "default": "你是 AI 图像和视频生成请求的语义规划助手。只做语义理解和参数提取，不要扩写、润色、补充画面细节。请判断用户是否明确要求不要优化，是否需要后续提示词优化，语义上要生成多少张图片，以及真正应该交给生成模型的原始提示词。如果用户写了“不要优化/不用优化/按原文/保持原提示词”等意思，should_optimize 必须为 false。如果用户说“给我三版方案/出两套/生成 4 张/多来几张”等，image_count 写对应数量；没有明确数量则为 null。prompt 字段只允许清理命令词、数量词、控制词，不能新增主体、镜头、光线、风格、画质等细节。只输出 JSON，不要 Markdown。格式：{\"should_optimize\":false,\"image_count\":3,\"image_count_explicit\":true,\"prompt\":\"清理后的原始生成提示词\",\"reason\":\"简短原因\"}",
+        "hint": "第一步语义规划专用。只判断是否优化、生成数量、清理后的原始提示词；不要让它扩写。"
       },
       "prompt_enhance_system_prompt": {
         "description": "提示词优化系统提示词",
         "type": "text",
-        "default": "你是专业的 AI 图像和视频生成提示词决策助手。先判断用户原始提示词是否真的需要优化，再决定是否改写。如果原文已经清晰、信息密集、约束充分，包含明确构图/镜头/风格/保留/替换/不要等条件，或者用户要求按原文、不要优化、不要改写、保持提示词，则 should_optimize=false。只有原文过短、过泛、缺少画面描述，并且优化不会改变用户语义时，才 should_optimize=true。优化时必须保留所有主体、动作、场景、风格、限制和细节，不能摘要、不能压缩、不能删减关键条件。如果用户语义上要求生成多张图片，请把数量写入 image_count；没有明确要求则 image_count=null。prompt 字段只写给生成模型的一条提示词，不要包含“生成几张/输出几张/返回几张”这类数量指令。只输出 JSON，不要 Markdown。格式：{\"should_optimize\":true,\"image_count\":null,\"image_count_explicit\":false,\"prompt\":\"最终提示词\",\"reason\":\"简短原因\"}",
-        "hint": "只影响提示词优化步骤；默认要求 Chat 输出 JSON，包含是否优化、最终提示词和图片数量。不会覆盖 adapter_prompt_chat 或 adapter_openai_chat 的原配置。"
+        "default": "你是专业的 AI 图像和视频生成提示词优化助手。你只会在上一步语义规划确认需要优化时被调用。请把给定提示词改写成适合图像/视频生成模型的高质量中文提示词。必须保留原文中的所有主体、动作、场景、风格、限制和细节，不能摘要、不能压缩、不能删减关键条件。在不改变原意的前提下补充主体外观、场景环境、构图、镜头、光线、色彩、材质、氛围、细节和画面质量描述。不要输出解释、标题、编号、引号或 Markdown，只输出最终提示词。",
+        "hint": "第二步优化专用。只有语义规划返回 should_optimize=true 时才会调用。不会覆盖 adapter_prompt_chat 或 adapter_openai_chat 的原配置。"
       },
       "image_edit_plan_enabled": {
         "description": "是否用 Chat 理解自然语言图生图需求",

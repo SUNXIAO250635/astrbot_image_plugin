@@ -38,7 +38,7 @@
 
 > **Seedream 4.5**：`doubao-seedream-4.5` 在 `/v1/images/generations` 同时支持文生图和图生图。使用它做图生图时，把 `generation_options.image_to_image_strategy` 设为 `image_generation`，`adapter_image_generation.model` 设为 `doubao-seedream-4.5`，`adapter_image_generation.size` 建议从 `1920x1920` 起。`adapter_image_generation.watermark` 默认是 `false`，即默认请求无水印输出；如上游不支持该字段，可改成 `auto`。
 
-> **提示词优化**：`generation_options.prompt_enhance_enabled` 默认开启。插件会先用 `adapter_prompt_chat` 调 `/v1/chat/completions` 判断是否真的需要优化；如果原文已经清晰、限制条件很多，或用户写了“不要优化/按原文/保持原提示词”，会直接使用原文，避免反向删细节。只有需要优化时才会发送优化后的内容；如果 `adapter_prompt_chat` 未填写，会兼容使用 `adapter_openai_chat`；如果 chat completions 未配置、调用失败，或返回内容明显比原文更短导致疑似丢细节，会自动回退原始提示词继续生成。
+> **提示词处理路线**：`generation_options.prompt_enhance_enabled` 默认开启。流程是：用户原文 → `adapter_prompt_chat` 语义规划（是否优化、生成几张、清理后的原始提示词）→ 只有规划结果需要优化时才再次调用 `adapter_prompt_chat` 优化 → 生图。用户写了“不要优化/按原文/保持原提示词”时会强制跳过第二步优化，避免反向删细节。比如 `/画 文 画一个红烧肉，给我三版方案 不要优化` 会识别为生成 3 张，并跳过提示词优化。
 
 > **生成数量**：文生图和图生图会从用户语义里识别输出数量，例如“画三张猫”“生成 3 张赛博城市”“基于这张图出两版不同风格”。识别到数量时会临时覆盖对应适配器的 `n`，没有明确数量时继续使用后台配置里的默认 `n`。插件会解析接口返回的多张图片/视频并用消息链一起发送；最终能返回几张取决于上游模型和渠道是否支持 `n`。
 
