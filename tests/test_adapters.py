@@ -73,6 +73,49 @@ def test_video_adapter_polls_nested_task_id_until_success():
     asyncio.run(scenario())
 
 
+def test_video_submit_exposes_task_id_without_polling():
+    async def scenario():
+        post = AsyncMock(return_value={"data": {"task_id": "task-submit"}})
+        config = {"base_url": "https://video.invalid", "model": "test-video"}
+
+        with patch.object(adapters, "_post_json", post):
+            response, task_id = await adapters.submit_openai_video(
+                config, "animate", timeout=30
+            )
+
+        assert response == {"data": {"task_id": "task-submit"}}
+        assert task_id == "task-submit"
+
+    asyncio.run(scenario())
+
+
+def test_video_poll_does_not_submit_a_second_remote_task():
+    async def scenario():
+        get = AsyncMock(
+            return_value={
+                "data": {
+                    "status": "SUCCESS",
+                    "result_url": "https://cdn.invalid/video.mp4",
+                }
+            }
+        )
+        post = AsyncMock()
+        config = {"base_url": "https://video.invalid", "poll_max_wait": 30}
+
+        with (
+            patch.object(adapters, "_post_json", post),
+            patch.object(adapters, "_get_json", get),
+        ):
+            result = await adapters.poll_openai_video(
+                config, "task-existing", timeout=30
+            )
+
+        post.assert_not_awaited()
+        assert result["data"]["status"] == "SUCCESS"
+
+    asyncio.run(scenario())
+
+
 def test_video_adapter_fails_fast_on_permanent_poll_error():
     async def scenario():
         post = AsyncMock(return_value={"task_id": "task-401"})

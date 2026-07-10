@@ -305,20 +305,15 @@ async def openai_chat(
 # --------------------------------------------------------------------------- #
 # 4) openai-video  /v1/video/generations
 # --------------------------------------------------------------------------- #
-async def openai_video(
+async def submit_openai_video(
     cfg: dict,
     prompt: str,
     image_bytes: Optional[bytes] = None,
     image_filename: Optional[str] = None,
     timeout: int = 300,
     proxy: str = "",
-) -> dict:
-    """文生视频 / 图生视频。
-
-    newapi(渠道)风格：提交后返回 task_id，需要轮回 GET /v1/video/generations/{task_id}
-    直到 data.status == SUCCESS 才有视频 URL。
-    图生视频走 multipart(部分厂商接受 image 字段)。
-    """
+) -> tuple[dict, Optional[str]]:
+    """提交文生视频/图生视频任务，返回提交响应和可选 task id。"""
     import base64 as _b64
     from aiohttp import FormData
 
@@ -380,18 +375,19 @@ async def openai_video(
                 f"视频上传请求失败: {type(e).__name__}: {e}"
             ) from e
 
-    # 提取 task_id；若提交响应里已经直接带视频/图片 URL，则视为同步完成。
-    submit_data = submit_resp.get("data") if isinstance(submit_resp, dict) else None
-    task_id = (
-        submit_resp.get("task_id")
-        if isinstance(submit_resp, dict) else None
-    ) or (submit_resp.get("id") if isinstance(submit_resp, dict) else None)
-    if not task_id and isinstance(submit_data, dict):
-        task_id = submit_data.get("task_id") or submit_data.get("id")
+    return submit_resp, _video_task_id(submit_resp)
 
-    if not task_id:
-        # 提交即完成(同步返回 media)，直接返回
-        return submit_resp
+
+async def poll_openai_video(
+    cfg: dict,
+    task_id: str,
+    initial_response: Optional[dict] = None,
+    timeout: int = 300,
+    proxy: str = "",
+) -> dict:
+    """轮询已提交的视频任务；该函数不会创建新的远端任务。"""
+    submit_url = _join(cfg.get("base_url", ""), "/v1/video/generations")
+    headers = _auth_headers(cfg.get("api_key", ""))
 
     # 轮询：data.status 达到 SUCCESS/COMPLETED/video.success 即结束
     poll_url = f"{submit_url}/{task_id}"
@@ -402,7 +398,7 @@ async def openai_video(
         cfg.get("poll_max_wait"), 600, minimum=1, maximum=86400
     )
     deadline_poll = _now() + max_wait
-    last = submit_resp
+    last = initial_response or {"task_id": task_id}
     while True:
         remaining = deadline_poll - _now()
         if remaining <= 0:
@@ -428,6 +424,38 @@ async def openai_video(
             reason = _video_fail_reason(last)
             raise ApiException(f"视频生成失败: {reason or status}")
         await asyncio.sleep(poll_interval)
+
+
+async def openai_video(
+    cfg: dict,
+    prompt: str,
+    image_bytes: Optional[bytes] = None,
+    image_filename: Optional[str] = None,
+    timeout: int = 300,
+    proxy: str = "",
+) -> dict:
+    """兼容入口：提交视频任务并在需要时轮询到结束。"""
+    submit_resp, task_id = await submit_openai_video(
+        cfg,
+        prompt,
+        image_bytes,
+        image_filename,
+        timeout,
+        proxy,
+    )
+    if not task_id:
+        return submit_resp
+    return await poll_openai_video(cfg, task_id, submit_resp, timeout, proxy)
+
+
+def _video_task_id(resp: dict) -> Optional[str]:
+    if not isinstance(resp, dict):
+        return None
+    task_id = resp.get("task_id") or resp.get("id")
+    data = resp.get("data")
+    if not task_id and isinstance(data, dict):
+        task_id = data.get("task_id") or data.get("id")
+    return str(task_id) if task_id not in (None, "") else None
 
 
 def _video_status(resp: dict) -> str:
