@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import Optional
 
@@ -11,7 +12,9 @@ import aiohttp
 
 
 class ApiException(Exception):
-    pass
+    def __init__(self, message: str, status: Optional[int] = None):
+        super().__init__(message)
+        self.status = status
 
 
 DEFAULT_USER_AGENT = (
@@ -56,15 +59,22 @@ async def _get_json(
     timeout_cfg = aiohttp.ClientTimeout(total=timeout)
     headers = _with_default_headers(headers, Accept="application/json")
     proxy_kw = {"proxy": proxy} if proxy else {}
-    async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-        async with session.get(url, headers=headers, **proxy_kw) as resp:
-            text = await resp.text(errors="ignore")
-            if resp.status >= 400:
-                raise ApiException(f"接口返回 {resp.status}: {text[:300]}")
-            try:
-                return _json.loads(text)
-            except Exception:
-                raise ApiException(f"响应非 JSON: {text[:300]}")
+    try:
+        async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
+            async with session.get(url, headers=headers, **proxy_kw) as resp:
+                text = await resp.text(errors="ignore")
+                if resp.status >= 400:
+                    raise ApiException(
+                        f"接口返回 {resp.status}: {text[:300]}", status=resp.status
+                    )
+                try:
+                    return _json.loads(text)
+                except Exception:
+                    raise ApiException(f"响应非 JSON: {text[:300]}")
+    except ApiException:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        raise ApiException(f"GET 请求失败: {type(e).__name__}: {e}") from e
 
 
 async def _post_json(
@@ -77,15 +87,24 @@ async def _post_json(
         headers, **{"Content-Type": "application/json", "Accept": "application/json"}
     )
     proxy_kw = {"proxy": proxy} if proxy else {}
-    async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-        async with session.post(url, headers=headers, json=payload, **proxy_kw) as resp:
-            text = await resp.text(errors="ignore")
-            if resp.status >= 400:
-                raise ApiException(f"接口返回 {resp.status}: {text[:300]}")
-            try:
-                return _json.loads(text)
-            except Exception:
-                raise ApiException(f"响应非 JSON: {text[:300]}")
+    try:
+        async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
+            async with session.post(
+                url, headers=headers, json=payload, **proxy_kw
+            ) as resp:
+                text = await resp.text(errors="ignore")
+                if resp.status >= 400:
+                    raise ApiException(
+                        f"接口返回 {resp.status}: {text[:300]}", status=resp.status
+                    )
+                try:
+                    return _json.loads(text)
+                except Exception:
+                    raise ApiException(f"响应非 JSON: {text[:300]}")
+    except ApiException:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        raise ApiException(f"POST 请求失败: {type(e).__name__}: {e}") from e
 
 
 async def _post_multipart(
@@ -107,15 +126,24 @@ async def _post_multipart(
     timeout_cfg = aiohttp.ClientTimeout(total=timeout)
     headers = _with_default_headers(headers, Accept="application/json")
     proxy_kw = {"proxy": proxy} if proxy else {}
-    async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-        async with session.post(url, headers=headers, data=form, **proxy_kw) as resp:
-            text = await resp.text(errors="ignore")
-            if resp.status >= 400:
-                raise ApiException(f"接口返回 {resp.status}: {text[:300]}")
-            try:
-                return _json.loads(text)
-            except Exception:
-                raise ApiException(f"响应非 JSON: {text[:300]}")
+    try:
+        async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
+            async with session.post(
+                url, headers=headers, data=form, **proxy_kw
+            ) as resp:
+                text = await resp.text(errors="ignore")
+                if resp.status >= 400:
+                    raise ApiException(
+                        f"接口返回 {resp.status}: {text[:300]}", status=resp.status
+                    )
+                try:
+                    return _json.loads(text)
+                except Exception:
+                    raise ApiException(f"响应非 JSON: {text[:300]}")
+    except ApiException:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        raise ApiException(f"上传请求失败: {type(e).__name__}: {e}") from e
 
 
 # --------------------------------------------------------------------------- #
@@ -149,8 +177,13 @@ async def image_generation(
 
 def _watermark_value(cfg: dict, model: str) -> Optional[bool]:
     raw = cfg.get("watermark", "false")
-    if str(raw).strip().lower() in {"", "auto", "default", "none"}:
+    normalized = str(raw).strip().lower()
+    if normalized in {"", "auto", "default", "none"}:
         return None
+    if normalized in {"0", "false", "no", "off", "关闭", "禁用"}:
+        model_lower = (model or "").lower()
+        if "seedream" not in model_lower:
+            return None
     return _as_bool(raw)
 
 
@@ -286,13 +319,12 @@ async def openai_video(
     直到 data.status == SUCCESS 才有视频 URL。
     图生视频走 multipart(部分厂商接受 image 字段)。
     """
-    import asyncio
     import base64 as _b64
     from aiohttp import FormData
 
     submit_url = _join(cfg.get("base_url", ""), "/v1/video/generations")
     headers = _auth_headers(cfg.get("api_key", ""))
-    seconds = int(cfg.get("seconds", 8) or 8)
+    seconds = _safe_int(cfg.get("seconds"), 8, minimum=1, maximum=60)
 
     if image_bytes is None:
         # 文生视频：JSON
@@ -324,23 +356,38 @@ async def openai_video(
         import json as _json
 
         timeout_cfg = aiohttp.ClientTimeout(total=timeout)
+        request_headers = _with_default_headers(headers, Accept="application/json")
         proxy_kw = {"proxy": proxy} if proxy else {}
-        async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-            async with session.post(submit_url, headers=headers, data=form,
-                                    **proxy_kw) as resp:
-                text = await resp.text(errors="ignore")
-                if resp.status >= 400:
-                    raise ApiException(f"接口返回 {resp.status}: {text[:300]}")
-                try:
-                    submit_resp = _json.loads(text)
-                except Exception:
-                    raise ApiException(f"响应非 JSON: {text[:300]}")
+        try:
+            async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
+                async with session.post(
+                    submit_url, headers=request_headers, data=form, **proxy_kw
+                ) as resp:
+                    text = await resp.text(errors="ignore")
+                    if resp.status >= 400:
+                        raise ApiException(
+                            f"接口返回 {resp.status}: {text[:300]}",
+                            status=resp.status,
+                        )
+                    try:
+                        submit_resp = _json.loads(text)
+                    except Exception:
+                        raise ApiException(f"响应非 JSON: {text[:300]}")
+        except ApiException:
+            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            raise ApiException(
+                f"视频上传请求失败: {type(e).__name__}: {e}"
+            ) from e
 
     # 提取 task_id；若提交响应里已经直接带视频/图片 URL，则视为同步完成。
+    submit_data = submit_resp.get("data") if isinstance(submit_resp, dict) else None
     task_id = (
         submit_resp.get("task_id")
         if isinstance(submit_resp, dict) else None
     ) or (submit_resp.get("id") if isinstance(submit_resp, dict) else None)
+    if not task_id and isinstance(submit_data, dict):
+        task_id = submit_data.get("task_id") or submit_data.get("id")
 
     if not task_id:
         # 提交即完成(同步返回 media)，直接返回
@@ -348,14 +395,25 @@ async def openai_video(
 
     # 轮询：data.status 达到 SUCCESS/COMPLETED/video.success 即结束
     poll_url = f"{submit_url}/{task_id}"
-    poll_interval = float(cfg.get("poll_interval", 3) or 3)
-    max_wait = max(timeout, int(cfg.get("poll_max_wait", 600) or 600))
+    poll_interval = _safe_float(
+        cfg.get("poll_interval"), 3.0, minimum=0.5, maximum=60.0
+    )
+    max_wait = _safe_int(
+        cfg.get("poll_max_wait"), 600, minimum=1, maximum=86400
+    )
     deadline_poll = _now() + max_wait
     last = submit_resp
     while True:
+        remaining = deadline_poll - _now()
+        if remaining <= 0:
+            status = _video_status(last)
+            raise ApiException(f"视频生成超时(> {max_wait}s)，最后状态: {status}")
         try:
-            last = await _get_json(poll_url, headers, timeout, proxy)
+            request_timeout = max(1, min(timeout, int(remaining) + 1))
+            last = await _get_json(poll_url, headers, request_timeout, proxy)
         except ApiException as e:
+            if e.status in {400, 401, 403, 404, 405, 422}:
+                raise
             # 偶发错误不致弃任务，继续重试
             if _now() > deadline_poll:
                 raise
@@ -369,8 +427,6 @@ async def openai_video(
         if status_norm in ("failed", "error", "cancelled", "canceled"):
             reason = _video_fail_reason(last)
             raise ApiException(f"视频生成失败: {reason or status}")
-        if _now() > deadline_poll:
-            raise ApiException(f"视频生成超时(> {max_wait}s)，最后状态: {status}")
         await asyncio.sleep(poll_interval)
 
 
@@ -406,3 +462,27 @@ def _now() -> float:
     import time as _t
 
     return _t.monotonic()
+
+
+def _safe_int(value, default: int, minimum=None, maximum=None) -> int:
+    try:
+        result = int(value if value not in (None, "") else default)
+    except (TypeError, ValueError):
+        result = default
+    if minimum is not None:
+        result = max(minimum, result)
+    if maximum is not None:
+        result = min(maximum, result)
+    return result
+
+
+def _safe_float(value, default: float, minimum=None, maximum=None) -> float:
+    try:
+        result = float(value if value not in (None, "") else default)
+    except (TypeError, ValueError):
+        result = default
+    if minimum is not None:
+        result = max(minimum, result)
+    if maximum is not None:
+        result = min(maximum, result)
+    return result

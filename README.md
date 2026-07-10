@@ -38,13 +38,15 @@
 
 > **图片尺寸**：`adapter_image_generation.size` / `adapter_image_edits.size` 为可手填文本框，支持任意尺寸（如 `1024x1024` / `2048x1152` / `4096x4096`，或 `16:9` 等比例）。最终能否真正输出该尺寸取决于上游渠道/模型支持，请按模型说明填写。
 
-> **Seedream 4.5**：`doubao-seedream-4.5` 在 `/v1/images/generations` 同时支持文生图和图生图。使用它做图生图时，把 `generation_options.image_to_image_strategy` 设为 `image_generation`，`adapter_image_generation.model` 设为 `doubao-seedream-4.5`，`adapter_image_generation.size` 建议从 `1920x1920` 起。`adapter_image_generation.watermark` 默认是 `false`，即默认请求无水印输出；如上游不支持该字段，可改成 `auto`。
+> **Seedream 4.5**：`doubao-seedream-4.5` 在 `/v1/images/generations` 同时支持文生图和图生图。使用它做图生图时，把 `generation_options.image_to_image_strategy` 设为 `image_generation`，`adapter_image_generation.model` 设为 `doubao-seedream-4.5`，`adapter_image_generation.size` 建议从 `1920x1920` 起。`adapter_image_generation.watermark` 默认是 `false`，即默认请求无水印输出；非 Seedream 模型使用 false 时会自动省略该字段，避免接口不兼容。
 
 > **提示词处理路线**：`generation_options.prompt_enhance_enabled` 默认开启。流程是：用户原文 → `adapter_prompt_chat` 语义规划（是否优化、生成几张、清理后的原始提示词）→ 只有规划结果需要优化时才再次调用 `adapter_prompt_chat` 优化 → 生图。用户写了“不要优化/按原文/保持原提示词”时会强制跳过第二步优化，避免反向删细节。比如 `/画 文 画一个红烧肉，给我三版方案 不要优化` 会识别为生成 3 张，并跳过提示词优化。`adapter_prompt_chat` 的 URL/key/model 可独立配置；如果只填 model，会继承 `adapter_openai_chat` 的 URL/key。
 
 > **生成数量**：文生图和图生图会从用户语义里识别输出数量，例如“画三张猫”“生成 3 张赛博城市”“基于这张图出两版不同风格”。识别到数量时会临时覆盖对应适配器的 `n`，没有明确数量时继续使用后台配置里的默认 `n`。如果上游忽略 `n` 只返回 1 张，插件会继续用 `n=1` 追加请求补齐到用户要求的数量；最终能否补齐仍取决于上游接口是否持续可用。
 
 > **多图发送**：多张结果默认使用 `media.multi_media_send_mode=sequential` 逐条发送，避免 aiocqhttp/NapCat 一次消息链发送多张远程图片时 WebSocket API 超时。如确实需要旧的一条消息链行为，可改为 `chain`。
+
+> **网络与视频任务**：HTTP 连接、代理、SSL 和超时错误会转换成可读提示；视频轮询支持顶层或 `data` 内的 `task_id/id`，401/403/404 等永久错误会直接返回，不再一直重试到超时。
 
 > **图生图语义理解**：`/画 图` 会用一次 `adapter_prompt_chat` 调用同时完成语义分析、图片编号选择、结果图数量和最终提示词改写，并把理解后的提示词发给你。普通“上一张/刚才那张”单图编辑可以复用同会话同用户缓存；多图/编号/参考图/替换角色等语义必须在同一条消息里附带对应图片，不会从聊天记录或上一张缓存里拼接多图。当前消息里的图片按出现顺序编号为第一张、第二张、第三张……默认最多读取 4 张，可用 `generation_options.image_edit_max_images` 调整。如果上游图生图接口支持多图，会把选中的图片一起传给接口，否则取决于上游兼容性。
 

@@ -122,7 +122,7 @@ except ImportError:
     from media import extract_all_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.2.4",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.2.5",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -942,7 +942,7 @@ class ImageGenPlugin(Star):
         num = r"(?P<num>\d{1,2}|[一二两三四五六七八九十])"
         target = r"(?:图|图片|照片|图像|画|插画|海报|壁纸|头像|表情包|方案|版本)"
         patterns = (
-            rf"(?i)\b(?:n|num|count)\s*[:=：]\s*(?P<num>\d{{1,2}})\b",
+            r"(?i)\b(?:n|num|count)\s*[:=：]\s*(?P<num>\d{1,2})\b",
             rf"(?:数量|张数|图片数|生成数量)\s*(?:[:=：为是]\s*)?{num}\s*(?:张|幅|个|份|版|套)?\s*{target}?",
             rf"{num}\s*(?:张|幅|份|版|套)\s*{target}",
             rf"{num}\s*个\s*{target}",
@@ -1720,10 +1720,19 @@ class ImageGenPlugin(Star):
         max_attempts = max(1, target - len(medias)) * 2
         while len(medias) < target and attempts < max_attempts:
             attempts += 1
-            extra_resp = await request_one(1)
+            try:
+                extra_resp = await request_one(1)
+            except Exception as e:
+                logger.warning(
+                    f"{task_name} 追加请求失败，保留已生成的 {len(medias)} 个结果: {e}"
+                )
+                break
             extra_medias = extract_all_media(extra_resp)
             if not extra_medias:
-                logger.warning(f"{task_name} 追加请求未提取到媒体: {extra_resp}")
+                logger.warning(
+                    f"{task_name} 追加请求未提取到媒体: "
+                    f"{self._response_summary(extra_resp)}"
+                )
                 break
             before_count = len(medias)
             for media in extra_medias:
@@ -1750,6 +1759,25 @@ class ImageGenPlugin(Star):
             else:
                 data.append({"url": value})
         return {"data": data}
+
+    @staticmethod
+    def _response_summary(resp) -> str:
+        if not isinstance(resp, dict):
+            return f"type={type(resp).__name__}"
+        parts = [f"keys={sorted(resp.keys())}"]
+        data = resp.get("data")
+        if isinstance(data, list):
+            parts.append(f"data_count={len(data)}")
+        elif isinstance(data, dict):
+            parts.append(f"data_keys={sorted(data.keys())}")
+        choices = resp.get("choices")
+        if isinstance(choices, list):
+            parts.append(f"choices_count={len(choices)}")
+        for key in ("code", "status", "error", "message"):
+            value = resp.get(key)
+            if value not in (None, ""):
+                parts.append(f"{key}={str(value)[:120]}")
+        return ", ".join(parts)
 
     # ---- 文生图 ----
     async def _do_text_to_image(self, event, prompt, output_count=None):
@@ -1867,7 +1895,9 @@ class ImageGenPlugin(Star):
     async def _send_result(self, event, resp, task_name, expect=None):
         medias = extract_all_media(resp)
         if not medias:
-            logger.warning(f"{task_name} 响应未提取到媒体: {resp}")
+            logger.warning(
+                f"{task_name} 响应未提取到媒体: {self._response_summary(resp)}"
+            )
             return event.plain_result(f"❌ {task_name}成功但响应中未找到图片/视频。")
 
         if len(medias) == 1:
@@ -1886,20 +1916,21 @@ class ImageGenPlugin(Star):
         if self._multi_media_send_mode == "chain" or not hasattr(event, "send"):
             return event.chain_result(chain)
 
-        sent_count = 0
-        try:
-            for item in chain[:-1]:
+        failed_count = 0
+        for item in chain[:-1]:
+            try:
                 await event.send(MessageChain([item]))
-                sent_count += 1
-                if self._multi_media_send_interval:
-                    await asyncio.sleep(self._multi_media_send_interval)
-        except Exception as e:
-            logger.warning(f"{task_name} 多媒体逐条发送失败，发送剩余媒体: {e}")
-            remaining = chain[sent_count:]
-            if not remaining:
-                return event.plain_result(f"⚠️ {task_name}结果已部分发送，但后续发送超时。")
-            return event.chain_result(remaining)
+            except Exception as e:
+                failed_count += 1
+                logger.warning(f"{task_name} 单个媒体发送失败，继续发送后续结果: {e}")
+            if self._multi_media_send_interval:
+                await asyncio.sleep(self._multi_media_send_interval)
 
+        if failed_count:
+            return event.chain_result([
+                Comp.Plain(f"⚠️ 有 {failed_count} 个结果发送失败，已继续发送其余结果。"),
+                chain[-1],
+            ])
         return event.chain_result([chain[-1]])
 
     async def _send_single_media(self, event, media, task_name, expect=None):

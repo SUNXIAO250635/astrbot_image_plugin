@@ -26,7 +26,7 @@
         "hint": "支持任意尺寸。填 WxH 或 比例(如 16:9)。doubao-seedream-4.5 这类模型可能要求至少 1920x1920。"
       },
       "watermark": {
-        "description": "水印开关（默认 false，即无水印；auto 表示不传该字段）",
+        "description": "水印开关（Seedream 默认 false；auto 表示不传该字段）",
         "type": "string",
         "default": "false",
         "options": [
@@ -34,7 +34,7 @@
           "true",
           "auto"
         ],
-        "hint": "doubao-seedream-4.5 默认可能带水印；保持 false 可请求无水印输出。若上游不支持 watermark 字段，可设为 auto。"
+        "hint": "doubao-seedream-4.5 保持 false 可请求无水印输出。非 Seedream 模型在 false 时会自动省略 watermark 字段，避免不兼容；true 会显式发送。"
       },
       "n": {
         "description": "生成数量",

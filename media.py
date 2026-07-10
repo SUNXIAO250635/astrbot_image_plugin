@@ -86,6 +86,11 @@ def extract_all_media(resp_json: dict) -> list[Tuple[str, str]]:
                 if isinstance(url, str) and url.startswith("http"):
                     add(_kind_from_key_url(key, url), url)
                     break
+                if isinstance(url, str) and url.startswith("data:"):
+                    m = _BASE64_RE.match(url)
+                    if m:
+                        add("image" if m.group(1) == "image" else "video", url)
+                        break
             b64 = item.get("b64_json") or item.get("b64")
             if b64:
                 add("image", f"data:image/png;base64,{b64}")
