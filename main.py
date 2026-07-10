@@ -117,18 +117,35 @@ DEFAULT_IMAGE_EDIT_PLAN_SYSTEM_PROMPT = (
 try:
     from . import adapters
     from .media import extract_all_media, download_to_file
+    from .imagegen_core import (
+        CallerContext,
+        Capability,
+        GenerationRequest,
+        GenerationService,
+        ProviderFailure,
+        ReferenceAsset,
+    )
 except ImportError:
     import adapters
     from media import extract_all_media, download_to_file
+    from imagegen_core import (
+        CallerContext,
+        Capability,
+        GenerationRequest,
+        GenerationService,
+        ProviderFailure,
+        ReferenceAsset,
+    )
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.2.5",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.3.0",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         self.config = config or {}
         self._last_image_cache = {}
+        self._generation_service = GenerationService(self.config)
 
     # ------------------------------------------------------------------ #
     # 指令组 /画
@@ -363,6 +380,13 @@ class ImageGenPlugin(Star):
             if key in cfg:
                 return cfg.get(key)
         return default
+
+    @property
+    def _router_enabled(self) -> bool:
+        mode = str(
+            self._cfg_value("mode", "router", "compatibility") or "router"
+        ).strip().lower()
+        return mode != "legacy"
 
     def _prompt_from_event_or_arg(
         self, event: AstrMessageEvent, prompt: str, *subcommands: str
@@ -1779,8 +1803,93 @@ class ImageGenPlugin(Star):
                 parts.append(f"{key}={str(value)[:120]}")
         return ", ".join(parts)
 
+    def _generation_request(
+        self,
+        event: AstrMessageEvent,
+        capability: Capability,
+        prompt: str,
+        image_bytes=None,
+        image_names=None,
+        output_count=None,
+    ) -> GenerationRequest:
+        data_items = list(image_bytes) if isinstance(image_bytes, (list, tuple)) else []
+        if image_bytes is not None and not data_items:
+            data_items = [image_bytes]
+        name_items = list(image_names) if isinstance(image_names, (list, tuple)) else []
+        if image_names and not name_items:
+            name_items = [image_names]
+        caller = CallerContext(
+            unified_msg_origin=str(getattr(event, "unified_msg_origin", "") or ""),
+            sender_id=self._event_sender_id(event),
+            group_id=self._event_group_id(event),
+        )
+        references = [
+            ReferenceAsset(
+                index=index,
+                source="current_or_cached",
+                filename=(
+                    name_items[index - 1]
+                    if index - 1 < len(name_items)
+                    else f"input_{index}.png"
+                ),
+                data=data,
+                owner_id=caller.sender_id,
+                session_id=caller.unified_msg_origin,
+            )
+            for index, data in enumerate(data_items, start=1)
+            if data is not None
+        ]
+        count = self._clamp_output_count(output_count) if output_count else 1
+        return GenerationRequest(
+            capability=capability,
+            prompt=prompt,
+            references=references,
+            count=count,
+            count_explicit=output_count is not None,
+            caller=caller,
+        )
+
+    async def _do_routed_generation(
+        self,
+        event: AstrMessageEvent,
+        capability: Capability,
+        prompt: str,
+        task_name: str,
+        image_bytes=None,
+        image_names=None,
+        output_count=None,
+    ):
+        request = self._generation_request(
+            event,
+            capability,
+            prompt,
+            image_bytes,
+            image_names,
+            output_count,
+        )
+        try:
+            result = await self._generation_service.generate(request)
+        except ProviderFailure as exc:
+            return event.plain_result(f"❌ {exc}")
+        for warning in result.warnings:
+            logger.warning(f"{task_name}: {warning}")
+        return await self._send_result(
+            event,
+            result.as_response(),
+            task_name,
+            expect=capability.media_kind,
+        )
+
     # ---- 文生图 ----
     async def _do_text_to_image(self, event, prompt, output_count=None):
+        if self._router_enabled:
+            return await self._do_routed_generation(
+                event,
+                Capability.TEXT_TO_IMAGE,
+                prompt,
+                "文生图",
+                output_count=output_count,
+            )
         base_cfg = self._cfg("adapter_image_generation")
         cfg = self._cfg_with_output_count(base_cfg, output_count)
         try:
@@ -1806,6 +1915,16 @@ class ImageGenPlugin(Star):
     async def _do_image_to_image(
         self, event, prompt, img_bytes, img_name, strategy, output_count=None
     ):
+        if self._router_enabled:
+            return await self._do_routed_generation(
+                event,
+                Capability.IMAGE_TO_IMAGE,
+                prompt,
+                "图生图",
+                img_bytes,
+                img_name,
+                output_count,
+            )
         if strategy == "image_generation":
             base_cfg = self._cfg("adapter_image_generation")
             cfg = self._cfg_with_output_count(base_cfg, output_count)
@@ -1855,6 +1974,13 @@ class ImageGenPlugin(Star):
 
     # ---- 文生视频 ----
     async def _do_text_to_video(self, event, prompt, strategy):
+        if self._router_enabled:
+            return await self._do_routed_generation(
+                event,
+                Capability.TEXT_TO_VIDEO,
+                prompt,
+                "文生视频",
+            )
         if strategy == "openai_chat":
             cfg = self._cfg("adapter_openai_chat")
             try:
@@ -1874,6 +2000,15 @@ class ImageGenPlugin(Star):
 
     # ---- 图生视频 ----
     async def _do_image_to_video(self, event, prompt, img_bytes, img_name, strategy):
+        if self._router_enabled:
+            return await self._do_routed_generation(
+                event,
+                Capability.IMAGE_TO_VIDEO,
+                prompt,
+                "图生视频",
+                img_bytes,
+                img_name,
+            )
         if strategy == "image_edits":
             cfg = self._cfg("adapter_image_edits")
             try:

@@ -159,6 +159,218 @@
       }
     }
   },
+  "providers": {
+    "description": "多供应商配置",
+    "type": "template_list",
+    "hint": "可添加多个图片/视频供应商。列表为空时自动使用上方旧版适配器配置。",
+    "templates": {
+      "provider": {
+        "name": "生成供应商",
+        "display_item": "provider_id",
+        "hide_hint_in_list": true,
+        "items": {
+          "provider_id": {
+            "description": "供应商实例 ID",
+            "type": "string",
+            "default": "",
+            "hint": "必须唯一，用于 routing 中配置顺序，例如 primary-image。"
+          },
+          "display_name": {
+            "description": "显示名称",
+            "type": "string",
+            "default": ""
+          },
+          "provider_type": {
+            "description": "供应商类型",
+            "type": "string",
+            "default": "openai_compat",
+            "options": [
+              "openai_compat",
+              "openai_images",
+              "google_gemini",
+              "agnes",
+              "xai",
+              "minimax",
+              "stepfun",
+              "zai",
+              "grok2api",
+              "doubao",
+              "sensenova"
+            ]
+          },
+          "enabled": {
+            "description": "是否启用",
+            "type": "bool",
+            "default": true
+          },
+          "base_url": {
+            "description": "Base URL",
+            "type": "string",
+            "default": ""
+          },
+          "api_key": {
+            "description": "API Key",
+            "type": "string",
+            "default": ""
+          },
+          "model": {
+            "description": "模型名",
+            "type": "string",
+            "default": ""
+          },
+          "capabilities": {
+            "description": "能力列表",
+            "type": "text",
+            "default": "text_to_image,image_to_image",
+            "hint": "逗号分隔：text_to_image,image_to_image,text_to_video,image_to_video。"
+          },
+          "priority": {
+            "description": "同类型优先级",
+            "type": "int",
+            "default": 0,
+            "hint": "数值越大优先级越高；显式 provider_order 优先于本字段。"
+          },
+          "image_api": {
+            "description": "图像接口模式",
+            "type": "string",
+            "default": "generation",
+            "options": [
+              "generation",
+              "edits"
+            ]
+          },
+          "video_api": {
+            "description": "视频接口模式",
+            "type": "string",
+            "default": "video",
+            "options": [
+              "video",
+              "chat",
+              "edits"
+            ]
+          },
+          "size": {
+            "description": "图片尺寸",
+            "type": "string",
+            "default": "1024x1024"
+          },
+          "n": {
+            "description": "默认生成数量",
+            "type": "int",
+            "default": 1
+          },
+          "watermark": {
+            "description": "水印开关",
+            "type": "string",
+            "default": "false",
+            "options": [
+              "false",
+              "true",
+              "auto"
+            ]
+          },
+          "seconds": {
+            "description": "视频时长(秒)",
+            "type": "int",
+            "default": 8
+          },
+          "poll_interval": {
+            "description": "视频轮询间隔(秒)",
+            "type": "float",
+            "default": 3
+          },
+          "poll_max_wait": {
+            "description": "视频轮询最大等待(秒)",
+            "type": "int",
+            "default": 600
+          },
+          "timeout": {
+            "description": "请求超时(秒)",
+            "type": "int",
+            "default": 300
+          },
+          "proxy": {
+            "description": "代理地址",
+            "type": "string",
+            "default": ""
+          }
+        }
+      }
+    }
+  },
+  "routing": {
+    "description": "供应商路由与故障转移",
+    "type": "object",
+    "items": {
+      "mode": {
+        "description": "路由模式",
+        "type": "string",
+        "default": "ordered_failover",
+        "options": [
+          "ordered_failover",
+          "round_robin"
+        ]
+      },
+      "text_to_image_order": {
+        "description": "文生图供应商顺序",
+        "type": "text",
+        "default": "",
+        "hint": "逗号分隔 provider_id；也可写 type:openai_compat。留空按优先级和配置顺序。"
+      },
+      "image_to_image_order": {
+        "description": "图生图供应商顺序",
+        "type": "text",
+        "default": ""
+      },
+      "text_to_video_order": {
+        "description": "文生视频供应商顺序",
+        "type": "text",
+        "default": ""
+      },
+      "image_to_video_order": {
+        "description": "图生视频供应商顺序",
+        "type": "text",
+        "default": ""
+      },
+      "failure_threshold": {
+        "description": "连续失败多少次后暂时冷却",
+        "type": "int",
+        "default": 2
+      },
+      "cooldown_seconds": {
+        "description": "供应商冷却秒数",
+        "type": "float",
+        "default": 30
+      },
+      "max_attempts": {
+        "description": "单次请求最多尝试几个供应商(0 表示全部)",
+        "type": "int",
+        "default": 0
+      },
+      "failover_after_terminal_failure": {
+        "description": "远端任务明确失败后是否尝试下一供应商",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭以避免视频重复计费；轮询超时或网络错误不会触发重复提交。"
+      }
+    }
+  },
+  "compatibility": {
+    "description": "兼容与回滚",
+    "type": "object",
+    "items": {
+      "mode": {
+        "description": "执行链",
+        "type": "string",
+        "default": "router",
+        "options": [
+          "router",
+          "legacy"
+        ],
+        "hint": "router 使用多供应商路由；出现兼容问题时可切回 legacy，旧配置无需重填。"
+      }
+    }
+  },
   "generation_options": {
     "description": "生成选项",
     "type": "object",

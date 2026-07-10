@@ -1,7 +1,7 @@
 # astrbot_plugin_imagegen
 
 一个 AstrBot 多模态生成插件，支持文生图、图生图、文生视频、图生视频。
-通过四种 OpenAI 兼容接口适配：
+支持多个供应商实例、按能力路由和失败自动切换。底层兼容四种常用接口：
 `/v1/images/generations`、`/v1/images/edits`、`/v1/chat/completions`、`/v1/video/generations`。
 
 ## 安装
@@ -15,6 +15,19 @@
 - `adapter_prompt_chat` 提示词优化 / 图生图理解
 - `adapter_openai_chat` 走对话模型生视频；`adapter_prompt_chat` 留空时也可兼容用于提示词优化
 - `adapter_openai_video` 文生视频
+
+AstrBot `>=4.10.4` 可使用新的 `providers` 列表添加多个供应商实例。支持的供应商类型包括 OpenAI-compatible、OpenAI Images、Google Gemini、Agnes AI、xAI、MiniMax、阶跃星辰、Zai、grok2api、豆包和 SenseNova；当前阶段统一复用兼容协议，原生协议能力会按供应商契约逐步启用。
+
+每个 provider 可配置：
+
+- 唯一 `provider_id`、供应商类型、URL、Key、模型和启用状态
+- `capabilities`：`text_to_image`、`image_to_image`、`text_to_video`、`image_to_video`
+- 图像接口模式 `generation/edits`，视频接口模式 `video/chat/edits`
+- 同类型 `priority`、超时、代理、尺寸、数量、水印、视频时长和轮询参数
+
+`routing` 可分别设置四种能力的供应商顺序。顺序支持直接填写 provider ID，也支持 `type:openai_compat` 这种类型占位；首选供应商发生网络错误、限流、服务端错误或媒体解析错误时会尝试后备供应商。远端视频已经返回 `task_id` 后，不会因为临时轮询错误盲目创建第二个任务。
+
+`compatibility.mode` 默认是 `router`。需要紧急回滚时可切换为 `legacy`，原来的四个适配器配置无需重填；`providers` 留空时 Router 也会自动读取旧配置。
 
 以及：
 - `generation_options.video_via_strategy` 文生视频优先适配器

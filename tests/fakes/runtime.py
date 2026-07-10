@@ -113,6 +113,7 @@ def plugin_config():
             "prompt_enhance_show_prompt": True,
             "image_edit_plan_enabled": False,
         },
+        "compatibility": {"mode": "legacy"},
         "access_control": {},
         "image_reference": {
             "enable_previous_image": "true",

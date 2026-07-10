@@ -112,6 +112,7 @@ class GenerationRequest:
     prompt: str
     references: list[ReferenceAsset] = field(default_factory=list)
     count: int = 1
+    count_explicit: bool = True
     size: str = ""
     aspect_ratio: str = ""
     duration: int | None = None

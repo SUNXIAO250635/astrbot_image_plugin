@@ -11,6 +11,7 @@ from .models import (
     ProviderFailure,
     ReferenceAsset,
 )
+from .service import GenerationService
 
 __all__ = [
     "CallerContext",
@@ -19,6 +20,7 @@ __all__ = [
     "GenerationHandle",
     "GenerationRequest",
     "GenerationResult",
+    "GenerationService",
     "MediaArtifact",
     "ProviderFailure",
     "ReferenceAsset",

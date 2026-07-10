@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 import types
 
+import pytest
+
 
 class _Logger:
     def debug(self, *args, **kwargs):
@@ -141,3 +143,16 @@ def _install_astrbot_stubs():
 
 
 _install_astrbot_stubs()
+
+
+@pytest.fixture
+def plugin_factory():
+    import main
+    from tests.fakes.runtime import FakeContext, FakeEvent, plugin_config
+
+    def create(mode="legacy"):
+        config = plugin_config()
+        config["compatibility"] = {"mode": mode}
+        return main.ImageGenPlugin(FakeContext(), config), FakeEvent()
+
+    return create
