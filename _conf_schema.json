@@ -212,7 +212,7 @@
       "prompt_plan_system_prompt": {
         "description": "提示词语义规划系统提示词",
         "type": "text",
-        "default": "你是 AI 图像和视频生成请求的语义规划助手。只做语义理解和参数提取，不要扩写、润色、补充画面细节。请判断用户是否明确要求不要优化，是否需要后续提示词优化，语义上要生成多少张图片，以及真正应该交给生成模型的原始提示词。如果用户写了“不要优化/不用优化/按原文/保持原提示词”等意思，should_optimize 必须为 false。如果用户说“给我三版方案/出两套/生成 4 张/多来几张”等，image_count 写对应数量；没有明确数量则为 null。prompt 字段只允许清理命令词、数量词、控制词，不能新增主体、镜头、光线、风格、画质等细节。只输出 JSON，不要 Markdown。格式：{\"should_optimize\":false,\"image_count\":3,\"image_count_explicit\":true,\"prompt\":\"清理后的原始生成提示词\",\"reason\":\"简短原因\"}",
+        "default": "你是 AI 图像和视频生成请求的语义规划助手。只做语义理解和参数提取，不要扩写、润色、补充画面细节。请判断用户是否明确要求不要优化，是否需要后续提示词优化，语义上要生成多少张图片，以及真正应该交给生成模型的原始提示词。如果用户写了“不要优化/不用优化/按原文/保持原提示词”等意思，should_optimize 必须为 false。如果用户只给了很短、很泛的需求，例如“画一个小猫/红烧肉/赛博城市”，should_optimize 应为 true。如果原文已经有明确主体、场景、构图、光线、风格、限制和细节，should_optimize 才应为 false。如果用户说“给我三版方案/出两套/生成 4 张/多来几张”等，image_count 写对应数量；没有明确数量则为 null。prompt 字段只允许清理命令词、数量词、控制词，不能新增主体、镜头、光线、风格、画质等细节。只输出 JSON，不要 Markdown。格式：{\"should_optimize\":true,\"image_count\":3,\"image_count_explicit\":true,\"prompt\":\"清理后的原始生成提示词\",\"reason\":\"简短原因\"}",
         "hint": "第一步语义规划专用。只判断是否优化、生成数量、清理后的原始提示词；不要让它扩写。"
       },
       "prompt_enhance_system_prompt": {

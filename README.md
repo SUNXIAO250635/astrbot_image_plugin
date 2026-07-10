@@ -23,6 +23,7 @@
 - `generation_options.prompt_chat_model` 提示词优化/图生图理解使用的 Chat 模型（旧版覆盖项；新配置建议填 `adapter_prompt_chat.model`）
 - `generation_options.prompt_enhance_enabled` 是否先用 `adapter_prompt_chat` 优化提示词
 - `generation_options.prompt_enhance_show_prompt` 是否发送优化后的提示词
+- `generation_options.prompt_plan_system_prompt` 提示词语义规划系统提示词
 - `generation_options.prompt_enhance_system_prompt` 提示词优化系统提示词
 - `generation_options.image_edit_plan_enabled` 是否用 Chat 理解自然语言图生图需求
 - `generation_options.image_edit_plan_send_images` 图生图理解时是否把图片发送给 Chat
@@ -39,7 +40,7 @@
 
 > **Seedream 4.5**：`doubao-seedream-4.5` 在 `/v1/images/generations` 同时支持文生图和图生图。使用它做图生图时，把 `generation_options.image_to_image_strategy` 设为 `image_generation`，`adapter_image_generation.model` 设为 `doubao-seedream-4.5`，`adapter_image_generation.size` 建议从 `1920x1920` 起。`adapter_image_generation.watermark` 默认是 `false`，即默认请求无水印输出；如上游不支持该字段，可改成 `auto`。
 
-> **提示词处理路线**：`generation_options.prompt_enhance_enabled` 默认开启。流程是：用户原文 → `adapter_prompt_chat` 语义规划（是否优化、生成几张、清理后的原始提示词）→ 只有规划结果需要优化时才再次调用 `adapter_prompt_chat` 优化 → 生图。用户写了“不要优化/按原文/保持原提示词”时会强制跳过第二步优化，避免反向删细节。比如 `/画 文 画一个红烧肉，给我三版方案 不要优化` 会识别为生成 3 张，并跳过提示词优化。
+> **提示词处理路线**：`generation_options.prompt_enhance_enabled` 默认开启。流程是：用户原文 → `adapter_prompt_chat` 语义规划（是否优化、生成几张、清理后的原始提示词）→ 只有规划结果需要优化时才再次调用 `adapter_prompt_chat` 优化 → 生图。用户写了“不要优化/按原文/保持原提示词”时会强制跳过第二步优化，避免反向删细节。比如 `/画 文 画一个红烧肉，给我三版方案 不要优化` 会识别为生成 3 张，并跳过提示词优化。`adapter_prompt_chat` 的 URL/key/model 可独立配置；如果只填 model，会继承 `adapter_openai_chat` 的 URL/key。
 
 > **生成数量**：文生图和图生图会从用户语义里识别输出数量，例如“画三张猫”“生成 3 张赛博城市”“基于这张图出两版不同风格”。识别到数量时会临时覆盖对应适配器的 `n`，没有明确数量时继续使用后台配置里的默认 `n`。如果上游忽略 `n` 只返回 1 张，插件会继续用 `n=1` 追加请求补齐到用户要求的数量；最终能否补齐仍取决于上游接口是否持续可用。
 

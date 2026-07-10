@@ -56,7 +56,7 @@ DECISION_PROMPT_ENHANCE_SYSTEM_PROMPT = (
     "\"prompt\":\"最终提示词\",\"reason\":\"简短原因\"}"
 )
 
-DEFAULT_PROMPT_PLAN_SYSTEM_PROMPT = (
+PREVIOUS_PROMPT_PLAN_SYSTEM_PROMPT = (
     "你是 AI 图像和视频生成请求的语义规划助手。"
     "只做语义理解和参数提取，不要扩写、润色、补充画面细节。"
     "请判断用户是否明确要求不要优化，是否需要后续提示词优化，语义上要生成多少张图片，"
@@ -66,6 +66,21 @@ DEFAULT_PROMPT_PLAN_SYSTEM_PROMPT = (
     "prompt 字段只允许清理命令词、数量词、控制词，不能新增主体、镜头、光线、风格、画质等细节。"
     "只输出 JSON，不要 Markdown。格式："
     "{\"should_optimize\":false,\"image_count\":3,\"image_count_explicit\":true,"
+    "\"prompt\":\"清理后的原始生成提示词\",\"reason\":\"简短原因\"}"
+)
+
+DEFAULT_PROMPT_PLAN_SYSTEM_PROMPT = (
+    "你是 AI 图像和视频生成请求的语义规划助手。"
+    "只做语义理解和参数提取，不要扩写、润色、补充画面细节。"
+    "请判断用户是否明确要求不要优化，是否需要后续提示词优化，语义上要生成多少张图片，"
+    "以及真正应该交给生成模型的原始提示词。"
+    "如果用户写了“不要优化/不用优化/按原文/保持原提示词”等意思，should_optimize 必须为 false。"
+    "如果用户只给了很短、很泛的需求，例如“画一个小猫/红烧肉/赛博城市”，should_optimize 应为 true。"
+    "如果原文已经有明确主体、场景、构图、光线、风格、限制和细节，should_optimize 才应为 false。"
+    "如果用户说“给我三版方案/出两套/生成 4 张/多来几张”等，image_count 写对应数量；没有明确数量则为 null。"
+    "prompt 字段只允许清理命令词、数量词、控制词，不能新增主体、镜头、光线、风格、画质等细节。"
+    "只输出 JSON，不要 Markdown。格式："
+    "{\"should_optimize\":true,\"image_count\":3,\"image_count_explicit\":true,"
     "\"prompt\":\"清理后的原始生成提示词\",\"reason\":\"简短原因\"}"
 )
 
@@ -107,7 +122,7 @@ except ImportError:
     from media import extract_all_media, download_to_file
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.2.3",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.2.4",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -483,6 +498,7 @@ class ImageGenPlugin(Star):
             LEGACY_PROMPT_ENHANCE_SYSTEM_PROMPT,
             PREVIOUS_PROMPT_ENHANCE_SYSTEM_PROMPT,
             DECISION_PROMPT_ENHANCE_SYSTEM_PROMPT,
+            PREVIOUS_PROMPT_PLAN_SYSTEM_PROMPT,
         }:
             return DEFAULT_PROMPT_PLAN_SYSTEM_PROMPT
         return prompt
@@ -527,15 +543,12 @@ class ImageGenPlugin(Star):
         )
 
     def _chat_cfg_for_prompt_tools(self, system_prompt: str) -> dict:
+        cfg = dict(self._cfg("adapter_openai_chat"))
         prompt_cfg = self._cfg("adapter_prompt_chat")
-        if any(prompt_cfg.get(key) for key in ("base_url", "api_key", "model")):
-            cfg = {
-                key: value
-                for key, value in prompt_cfg.items()
-                if value and key in {"base_url", "api_key", "model"}
-            }
-        else:
-            cfg = dict(self._cfg("adapter_openai_chat"))
+        for key in ("base_url", "api_key", "model"):
+            value = prompt_cfg.get(key)
+            if value:
+                cfg[key] = value
         options_cfg = self._cfg("generation_options")
         prompt_model = (
             self.config.get("prompt_chat_model")
@@ -590,6 +603,11 @@ class ImageGenPlugin(Star):
             )
         except Exception as e:
             logger.warning(f"提示词语义规划失败，使用本地兜底: {e}")
+            enhanced, notice = await self._fallback_enhance_after_plan_failure(
+                source_prompt, task_name, explicit_no_enhance
+            )
+            if enhanced:
+                return enhanced, notice, fallback_count
             return source_prompt, None, fallback_count
 
         planned_prompt = plan.get("prompt") or source_prompt
@@ -623,6 +641,25 @@ class ImageGenPlugin(Star):
             else None
         )
         return enhanced, notice, output_count
+
+    async def _fallback_enhance_after_plan_failure(
+        self, prompt: str, task_name: str, explicit_no_enhance: bool
+    ) -> tuple:
+        if explicit_no_enhance or not self._should_optimize_prompt_fallback(prompt):
+            return "", None
+        try:
+            enhanced = await self._enhance_prompt_once(prompt, task_name)
+        except Exception as e:
+            logger.warning(f"提示词规划失败后的兜底优化也失败: {e}")
+            return "", None
+        if not enhanced or self._is_prompt_enhancement_degraded(prompt, enhanced):
+            return "", None
+        notice = (
+            f"✨ 优化后的提示词：\n{enhanced}"
+            if self._prompt_enhance_show_prompt
+            else None
+        )
+        return enhanced, notice
 
     async def _plan_prompt_request(
         self,
@@ -689,13 +726,21 @@ class ImageGenPlugin(Star):
         else:
             candidate = self._fallback_generation_prompt(candidate, output_count)
 
-        should_optimize = self._json_bool(
-            plan.get(
-                "should_optimize",
-                plan.get("optimize", plan.get("should_enhance", False)),
-            ),
-            False,
+        optimize_value = self._first_present(
+            plan,
+            "should_optimize",
+            "optimize",
+            "should_enhance",
+            "need_optimize",
+            "needs_optimization",
+            "requires_optimization",
+            "optimize_prompt",
+            "enhance_prompt",
         )
+        if optimize_value is None:
+            should_optimize = self._should_optimize_prompt_fallback(candidate)
+        else:
+            should_optimize = self._json_bool(optimize_value, False)
         if explicit_no_enhance:
             should_optimize = False
 
@@ -704,6 +749,36 @@ class ImageGenPlugin(Star):
             "image_count": output_count,
             "should_optimize": should_optimize,
         }
+
+    @staticmethod
+    def _first_present(data: dict, *keys):
+        for key in keys:
+            if key in data:
+                return data.get(key)
+        return None
+
+    @staticmethod
+    def _should_optimize_prompt_fallback(prompt: str) -> bool:
+        text = (prompt or "").strip()
+        signal_len = ImageGenPlugin._prompt_signal_len(text)
+        if signal_len < 18:
+            return True
+        detail_markers = (
+            "镜头",
+            "构图",
+            "光线",
+            "风格",
+            "背景",
+            "氛围",
+            "材质",
+            "色彩",
+            "细节",
+            "不要",
+            "保持",
+            "参考",
+            "替换",
+        )
+        return signal_len < 36 and not any(marker in text for marker in detail_markers)
 
     @staticmethod
     def _looks_prompt_expanded(original: str, candidate: str) -> bool:
