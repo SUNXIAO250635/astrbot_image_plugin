@@ -1716,17 +1716,24 @@ class ImageGenPlugin(Star):
             f"{task_name} 请求 {target} 张，但首个响应只有 {len(medias)} 张，"
             "尝试追加请求补齐。"
         )
-        while len(medias) < target:
+        attempts = 0
+        max_attempts = max(1, target - len(medias)) * 2
+        while len(medias) < target and attempts < max_attempts:
+            attempts += 1
             extra_resp = await request_one(1)
             extra_medias = extract_all_media(extra_resp)
             if not extra_medias:
                 logger.warning(f"{task_name} 追加请求未提取到媒体: {extra_resp}")
                 break
+            before_count = len(medias)
             for media in extra_medias:
                 if media not in medias:
                     medias.append(media)
                 if len(medias) >= target:
                     break
+            if len(medias) == before_count:
+                logger.warning(f"{task_name} 追加请求返回重复媒体，停止补齐。")
+                break
 
         if not medias:
             return resp
@@ -1879,14 +1886,19 @@ class ImageGenPlugin(Star):
         if self._multi_media_send_mode == "chain" or not hasattr(event, "send"):
             return event.chain_result(chain)
 
+        sent_count = 0
         try:
             for item in chain[:-1]:
                 await event.send(MessageChain([item]))
+                sent_count += 1
                 if self._multi_media_send_interval:
                     await asyncio.sleep(self._multi_media_send_interval)
         except Exception as e:
-            logger.warning(f"{task_name} 多媒体逐条发送失败，回退消息链发送: {e}")
-            return event.chain_result(chain)
+            logger.warning(f"{task_name} 多媒体逐条发送失败，发送剩余媒体: {e}")
+            remaining = chain[sent_count:]
+            if not remaining:
+                return event.plain_result(f"⚠️ {task_name}结果已部分发送，但后续发送超时。")
+            return event.chain_result(remaining)
 
         return event.chain_result([chain[-1]])
 
