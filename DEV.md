@@ -168,3 +168,15 @@ multipart/form-data：
 
 ## 5. 依赖
 - `aiohttp`（异步 HTTP，符合 AstrBot 规范）
+
+## 6. 回归测试
+
+测试使用最小 AstrBot stub，不需要安装完整 AstrBot，也不会请求真实供应商：
+
+```powershell
+python -m pytest -q
+```
+
+当前回归范围包括文生图、图生图、文生视频、图生视频、提示词数量解析、
+Seedream 水印、视频任务轮询、多媒体逐条发送、白名单和上一张图片缓存隔离。
+`pytest` 只用于开发和 CI，不加入插件运行时 `requirements.txt`。
