@@ -98,7 +98,8 @@ DEFAULT_IMAGE_EDIT_PLAN_SYSTEM_PROMPT = (
     "请一次性完成意图判断、图片引用关系分析和最终图生图提示词改写。"
     "请理解“上一张/刚才那张/第一张图/第二张图/第 N 张图/基底/参考/替换/保留/角色特征”等指代关系。"
     "普通单图编辑可以允许使用上一张缓存；凡是用户语义上引用多张图、编号图片、参考图、基础图、替换对象、"
-    "组合/融合多个来源，都必须使用当前同一条消息里的图片，不能从聊天记录拼接。"
+    "组合/融合多个来源，都必须使用当前请求明确提供的图片来源，包括当前消息、被回复消息、"
+    "当前合并转发或群文件；不能从未引用的聊天历史或上一张缓存拼接多图。"
     "如果用户要求以某一张为基础、用其他图片替换人物或参考角色特征，提示词必须明确："
     "保留基础图的背景、构图、氛围、动作、光线和镜头关系；"
     "将基础图中的目标人物或物体按用户指定关系替换为参考图中的角色身份与外观特征，"
@@ -114,6 +115,16 @@ DEFAULT_IMAGE_EDIT_PLAN_SYSTEM_PROMPT = (
     "\"reason\":\"简短原因\"}"
 )
 
+DEFAULT_GENERATION_INTENT_SYSTEM_PROMPT = (
+    "你是多模态图片和视频生成请求规划器。根据用户自然语言、是否有参考图和显式模式，"
+    "选择 capability：text_to_image、image_to_image、text_to_video、image_to_video。"
+    "识别 preset：头像、海报、壁纸、卡片、手机壁纸、手办化、表情包、风格转换；"
+    "没有预设则为空。提取生成数量 count，并保留用户全部关键条件。"
+    "只输出 JSON，不要 Markdown。格式："
+    '{"capability":"text_to_image","preset":"","count":1,'
+    '"prompt":"交给生成模型的需求","reason":"简短原因"}'
+)
+
 try:
     from . import adapters
     from .media import extract_all_media, download_to_file
@@ -122,9 +133,13 @@ try:
         Capability,
         GenerationRequest,
         GenerationService,
+        JobManager,
+        IntentPlanner,
         ProviderFailure,
         ReferenceAsset,
+        ReferenceResolver,
     )
+    from .imagegen_core.presets import get_preset
 except ImportError:
     import adapters
     from media import extract_all_media, download_to_file
@@ -133,12 +148,16 @@ except ImportError:
         Capability,
         GenerationRequest,
         GenerationService,
+        JobManager,
+        IntentPlanner,
         ProviderFailure,
         ReferenceAsset,
+        ReferenceResolver,
     )
+    from imagegen_core.presets import get_preset
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.3.0",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.4.0",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -146,6 +165,16 @@ class ImageGenPlugin(Star):
         self.config = config or {}
         self._last_image_cache = {}
         self._generation_service = GenerationService(self.config)
+        self._reference_resolver = ReferenceResolver(self._load_image_bytes)
+        self._intent_planner = IntentPlanner()
+        jobs_cfg = self._cfg("jobs")
+        self._job_manager = JobManager(
+            self,
+            foreground_wait_seconds=self._safe_float(
+                jobs_cfg.get("foreground_wait_seconds"), 15.0, 0.01, 300.0
+            ),
+            enabled=self._cfg_bool(jobs_cfg.get("enabled", True), True),
+        )
 
     # ------------------------------------------------------------------ #
     # 指令组 /画
@@ -161,9 +190,11 @@ class ImageGenPlugin(Star):
         yield event.plain_result(
             "🖼️ 画图/视频插件\n"
             "/画 文 <提示词>          文生图(image-generation)\n"
-            "/画 图 <提示词>          图生图(image-edits；多图需同条消息附图)\n"
+            "/画 图 <提示词>          图生图(image-edits；支持直附、回复、转发和群文件)\n"
             "/画 视频 <提示词>        文生视频\n"
             "/画 图生视频 <提示词>    图生视频(可复用上一张图)\n"
+            "/画 头像|海报|壁纸|卡片|手机壁纸 <提示词>\n"
+            "/画 手办化|表情包|风格转换 <提示词>\n"
             "别名：文生图/文生视频"
         )
 
@@ -212,7 +243,9 @@ class ImageGenPlugin(Star):
             event.stop_event()
             return
         requested_output_count = self._requested_output_count(prompt)
-        current_image_items = await self._get_current_image_items(event)
+        current_image_items = await self._get_resolved_image_items(
+            event, prompt, allow_cached=False
+        )
         image_intent = await self._plan_image_edit_once(prompt, current_image_items)
         output_count = (
             self._to_positive_int(image_intent.get("output_image_count"))
@@ -240,7 +273,9 @@ class ImageGenPlugin(Star):
                 )
                 event.stop_event()
                 return
-            image_items = await self._get_cached_image_items(event)
+            image_items = await self._get_resolved_image_items(
+                event, prompt, allow_cached=True
+            )
 
         if not image_items:
             yield event.plain_result(
@@ -305,14 +340,18 @@ class ImageGenPlugin(Star):
             yield event.plain_result("❌ 请提供提示词，例如: /画 图生视频 让画面动起来")
             event.stop_event()
             return
-        img_bytes, img_name = await self._get_first_image_bytes(event)
-        if not img_bytes:
+        image_items = await self._get_resolved_image_items(
+            event, prompt, max_images=1, allow_cached=True
+        )
+        if not image_items:
             yield event.plain_result(
                 "❌ 图生视频需要一张图片。请在同一消息里附带图片，"
                 "或先发送/生成一张图片后再使用本指令。"
             )
             event.stop_event()
             return
+        img_bytes = image_items[0]["bytes"]
+        img_name = image_items[0]["filename"]
         prompt, prompt_notice = await self._prepare_prompt(prompt, "图生视频")
         if prompt_notice:
             yield event.plain_result(prompt_notice)
@@ -320,6 +359,66 @@ class ImageGenPlugin(Star):
             "image_to_video_strategy", "openai_video", "generation_options"
         )
         yield await self._do_image_to_video(event, prompt, img_bytes, img_name, strategy)
+
+    @image_group.command("头像")
+    async def preset_avatar(self, event: AstrMessageEvent, prompt: str = ""):
+        for result in await self._run_natural_generation(event, prompt, preset="头像"):
+            yield result
+
+    @image_group.command("海报")
+    async def preset_poster(self, event: AstrMessageEvent, prompt: str = ""):
+        for result in await self._run_natural_generation(event, prompt, preset="海报"):
+            yield result
+
+    @image_group.command("壁纸")
+    async def preset_wallpaper(self, event: AstrMessageEvent, prompt: str = ""):
+        for result in await self._run_natural_generation(event, prompt, preset="壁纸"):
+            yield result
+
+    @image_group.command("卡片")
+    async def preset_card(self, event: AstrMessageEvent, prompt: str = ""):
+        for result in await self._run_natural_generation(event, prompt, preset="卡片"):
+            yield result
+
+    @image_group.command("手机壁纸")
+    async def preset_phone_wallpaper(self, event: AstrMessageEvent, prompt: str = ""):
+        for result in await self._run_natural_generation(event, prompt, preset="手机壁纸"):
+            yield result
+
+    @image_group.command("手办化", alias={"手办"})
+    async def preset_figurine(self, event: AstrMessageEvent, prompt: str = ""):
+        for result in await self._run_natural_generation(event, prompt, preset="手办化"):
+            yield result
+
+    @image_group.command("表情包", alias={"贴纸"})
+    async def preset_meme(self, event: AstrMessageEvent, prompt: str = ""):
+        for result in await self._run_natural_generation(event, prompt, preset="表情包"):
+            yield result
+
+    @image_group.command("风格转换", alias={"转风格"})
+    async def preset_style(self, event: AstrMessageEvent, prompt: str = ""):
+        for result in await self._run_natural_generation(event, prompt, preset="风格转换"):
+            yield result
+
+    @filter.llm_tool(name="generate_media")
+    async def generate_media_tool(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        mode: str = "auto",
+        preset: str = "",
+    ):
+        '''根据自然语言生成或编辑图片、视频。
+
+        Args:
+            prompt(string): 用户的完整生成或编辑需求
+            mode(string): auto、文生图、图生图、文生视频或图生视频
+            preset(string): 可选预设，头像、海报、壁纸、卡片、手机壁纸、手办化、表情包或风格转换
+        '''
+        for result in await self._run_natural_generation(
+            event, prompt, mode=mode, preset=preset
+        ):
+            yield result
 
     # ------------------------------------------------------------------ #
     # 实现
@@ -380,6 +479,125 @@ class ImageGenPlugin(Star):
             if key in cfg:
                 return cfg.get(key)
         return default
+
+    async def _run_natural_generation(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        *,
+        mode: str = "auto",
+        preset: str = "",
+    ) -> list:
+        denied = self._access_denied_result(event)
+        if denied is not None:
+            return [denied]
+        if preset:
+            prompt = self._prompt_from_event_or_arg(
+                event,
+                prompt,
+                preset,
+                *[alias for alias, key in {
+                    "手办": "手办化",
+                    "贴纸": "表情包",
+                    "转风格": "风格转换",
+                }.items() if key == preset],
+            )
+        prompt = (prompt or "").strip()
+        cache_markers = ("上一张", "刚才那张", "上张图", "前一张", "之前的图")
+        normalized_mode = (mode or "auto").strip().lower()
+        allow_cached = (
+            any(marker in prompt for marker in cache_markers)
+            or normalized_mode
+            in {"image_to_image", "i2i", "图生图", "image_to_video", "i2v", "图生视频"}
+            or preset in {"手办化", "手办", "表情包", "贴纸", "风格转换", "转风格"}
+        )
+        image_items = await self._get_resolved_image_items(
+            event,
+            prompt,
+            allow_cached=allow_cached,
+        )
+        assets = [item["asset"] for item in image_items if item.get("asset")]
+        local_count = self._requested_output_count(prompt)
+        plan = self._intent_planner.local_plan(
+            prompt,
+            has_reference=bool(assets),
+            mode=mode,
+            preset=preset,
+            count=local_count,
+        )
+        options = self._cfg("generation_options")
+        if self._cfg_bool(options.get("intent_plan_enabled", True), True):
+            system_prompt = str(
+                options.get("intent_plan_system_prompt")
+                or DEFAULT_GENERATION_INTENT_SYSTEM_PROMPT
+            )
+            chat_cfg = self._chat_cfg_for_prompt_tools(system_prompt)
+            if chat_cfg.get("base_url"):
+                planner_prompt = (
+                    f"用户需求：{prompt}\n"
+                    f"显式模式：{mode or 'auto'}\n"
+                    f"显式预设：{preset or '无'}\n"
+                    f"可用参考图数量：{len(assets)}\n"
+                    "请输出严格 JSON。"
+                )
+                try:
+                    response = await adapters.openai_chat(
+                        chat_cfg,
+                        planner_prompt,
+                        image_bytes=[asset.data for asset in assets] or None,
+                        image_filename=[asset.filename for asset in assets] or None,
+                        timeout=self._timeout,
+                        proxy=self._proxy,
+                    )
+                    parsed = self._extract_json_object(
+                        self._extract_chat_text(response)
+                    )
+                    plan = self._intent_planner.normalize_ai_plan(parsed, plan)
+                except Exception as exc:
+                    logger.warning(f"多模态生成意图规划失败，使用本地判断: {exc}")
+
+        selected_preset = get_preset(preset) or get_preset(plan.preset)
+        if selected_preset and selected_preset.reference_preferred and assets:
+            if plan.capability == Capability.TEXT_TO_IMAGE:
+                plan.capability = Capability.IMAGE_TO_IMAGE
+        if plan.capability.needs_reference and not assets:
+            return [event.plain_result("❌ 该生成需求需要参考图片，但没有找到可用图片。")]
+        generation_prompt = plan.prompt
+        size = ""
+        if selected_preset:
+            generation_prompt = selected_preset.apply(generation_prompt)
+            size = selected_preset.default_size
+        if not generation_prompt:
+            return [event.plain_result("❌ 请提供生成或编辑需求。")]
+
+        notice = None
+        output_count = plan.count if plan.count_explicit else None
+        if plan.capability.media_kind == "image":
+            generation_prompt, notice, detected_count = await self._prepare_image_prompt(
+                generation_prompt, plan.capability.value
+            )
+            if detected_count:
+                output_count = detected_count
+        else:
+            generation_prompt, notice = await self._prepare_prompt(
+                generation_prompt, plan.capability.value
+            )
+        task_names = {
+            Capability.TEXT_TO_IMAGE: "文生图",
+            Capability.IMAGE_TO_IMAGE: "图生图",
+            Capability.TEXT_TO_VIDEO: "文生视频",
+            Capability.IMAGE_TO_VIDEO: "图生视频",
+        }
+        result = await self._do_routed_generation(
+            event,
+            plan.capability,
+            generation_prompt,
+            task_names[plan.capability],
+            output_count=output_count,
+            references=assets,
+            size=size,
+        )
+        return ([event.plain_result(notice)] if notice else []) + [result]
 
     @property
     def _router_enabled(self) -> bool:
@@ -471,6 +689,18 @@ class ImageGenPlugin(Star):
         if value is None:
             return default
         return str(value).strip().lower() in {"1", "true", "yes", "on", "开启", "启用"}
+
+    @staticmethod
+    def _safe_float(value, default: float, minimum=None, maximum=None) -> float:
+        try:
+            result = float(value if value not in (None, "") else default)
+        except (TypeError, ValueError):
+            result = default
+        if minimum is not None:
+            result = max(minimum, result)
+        if maximum is not None:
+            result = min(maximum, result)
+        return result
 
     @property
     def _prompt_enhance_enabled(self) -> bool:
@@ -1049,7 +1279,8 @@ class ImageGenPlugin(Star):
 
         plan_prompt = (
             f"用户原始图生图需求：{original}\n"
-            f"当前同一条消息中附带的图片数量：{len(current_image_items)}，"
+            f"当前请求解析到的图片数量：{len(current_image_items)}，"
+            f"来源顺序：{[item.get('source', 'current') for item in current_image_items]}。"
             "如果有图片则编号从 1 开始。\n"
             "请输出严格 JSON。字段必须包含："
             "requires_current_images, required_image_count, should_plan, "
@@ -1240,10 +1471,10 @@ class ImageGenPlugin(Star):
         required = int(intent.get("required_image_count") or 1)
         if current_count < required:
             return (
-                "❌ 这个图生图需求需要在同一条消息里附带对应图片。"
+                "❌ 这个图生图需求需要在当前请求中明确提供或引用对应图片。"
                 f"当前语义分析至少需要 {required} 张当前消息图片，"
                 f"但当前消息只有 {current_count} 张；"
-                "插件不会从聊天记录或上一张缓存里拼接多图。"
+                "插件不会从未引用的聊天历史或上一张缓存里拼接多图。"
             )
         return ""
 
@@ -1704,6 +1935,62 @@ class ImageGenPlugin(Star):
 
         return []
 
+    async def _get_resolved_image_items(
+        self,
+        event: AstrMessageEvent,
+        prompt: str = "",
+        max_images: int = None,
+        allow_cached: bool = False,
+    ) -> list:
+        if max_images is None:
+            reference_cfg = self._cfg("image_reference")
+            try:
+                limit = max(
+                    1,
+                    min(
+                        10,
+                        int(
+                            reference_cfg.get(
+                                "max_reference_images", self._image_edit_max_images
+                            )
+                        ),
+                    ),
+                )
+            except (TypeError, ValueError):
+                limit = self._image_edit_max_images
+        else:
+            limit = max_images
+
+        async def cached_loader():
+            return await self._get_cached_image_items(event)
+
+        assets = await self._reference_resolver.resolve(
+            event,
+            prompt,
+            max_images=max(1, limit),
+            cached_loader=cached_loader,
+            allow_cached=allow_cached,
+        )
+        items = [
+            {
+                "bytes": asset.data,
+                "filename": asset.filename,
+                "ref": asset.value,
+                "source": asset.source,
+                "asset": asset,
+            }
+            for asset in assets
+            if asset.data
+        ]
+        if items and items[0]["source"] != "cache":
+            self._remember_last_image(
+                event,
+                items[0]["ref"],
+                items[0]["filename"],
+                source=items[0]["source"],
+            )
+        return items
+
     async def _get_cached_image_items(self, event: AstrMessageEvent) -> list:
         """只读取同会话同用户上一张图片缓存。"""
         cached_ref = self._get_cached_image_ref(event)
@@ -1811,34 +2098,37 @@ class ImageGenPlugin(Star):
         image_bytes=None,
         image_names=None,
         output_count=None,
+        references: list[ReferenceAsset] = None,
+        size: str = "",
     ) -> GenerationRequest:
         data_items = list(image_bytes) if isinstance(image_bytes, (list, tuple)) else []
-        if image_bytes is not None and not data_items:
+        if image_bytes is not None and not isinstance(image_bytes, (list, tuple)):
             data_items = [image_bytes]
         name_items = list(image_names) if isinstance(image_names, (list, tuple)) else []
-        if image_names and not name_items:
+        if image_names and not isinstance(image_names, (list, tuple)):
             name_items = [image_names]
         caller = CallerContext(
             unified_msg_origin=str(getattr(event, "unified_msg_origin", "") or ""),
             sender_id=self._event_sender_id(event),
             group_id=self._event_group_id(event),
         )
-        references = [
-            ReferenceAsset(
-                index=index,
-                source="current_or_cached",
-                filename=(
-                    name_items[index - 1]
-                    if index - 1 < len(name_items)
-                    else f"input_{index}.png"
-                ),
-                data=data,
-                owner_id=caller.sender_id,
-                session_id=caller.unified_msg_origin,
-            )
-            for index, data in enumerate(data_items, start=1)
-            if data is not None
-        ]
+        if references is None:
+            references = [
+                ReferenceAsset(
+                    index=index,
+                    source="current_or_cached",
+                    filename=(
+                        name_items[index - 1]
+                        if index - 1 < len(name_items)
+                        else f"input_{index}.png"
+                    ),
+                    data=data,
+                    owner_id=caller.sender_id,
+                    session_id=caller.unified_msg_origin,
+                )
+                for index, data in enumerate(data_items, start=1)
+                if data is not None
+            ]
         count = self._clamp_output_count(output_count) if output_count else 1
         return GenerationRequest(
             capability=capability,
@@ -1846,6 +2136,7 @@ class ImageGenPlugin(Star):
             references=references,
             count=count,
             count_explicit=output_count is not None,
+            size=size,
             caller=caller,
         )
 
@@ -1858,6 +2149,8 @@ class ImageGenPlugin(Star):
         image_bytes=None,
         image_names=None,
         output_count=None,
+        references: list[ReferenceAsset] = None,
+        size: str = "",
     ):
         request = self._generation_request(
             event,
@@ -1866,11 +2159,35 @@ class ImageGenPlugin(Star):
             image_bytes,
             image_names,
             output_count,
+            references,
+            size,
         )
+        metadata = {
+            "task_name": task_name,
+            "capability": capability.value,
+            "caller": request.caller.to_dict(),
+        }
         try:
-            result = await self._generation_service.generate(request)
+            jobs_cfg = self._cfg("jobs")
+            if self._cfg_bool(
+                jobs_cfg.get("restore_remote_video_tasks", True), True
+            ):
+                await self._job_manager.restore(
+                    self._generation_service.resume,
+                    self._background_job_completed,
+                )
+            job_run = await self._job_manager.run(
+                lambda on_handle: self._generation_service.generate(request, on_handle),
+                self._background_job_completed,
+                metadata,
+            )
         except ProviderFailure as exc:
             return event.plain_result(f"❌ {exc}")
+        if job_run.background:
+            return event.plain_result(
+                f"⏳ {task_name}任务已转到后台，任务 ID：{job_run.job_id}"
+            )
+        result = job_run.result
         for warning in result.warnings:
             logger.warning(f"{task_name}: {warning}")
         return await self._send_result(
@@ -1879,6 +2196,92 @@ class ImageGenPlugin(Star):
             task_name,
             expect=capability.media_kind,
         )
+
+    async def _background_job_completed(
+        self, job_id: str, result, error, metadata: dict
+    ) -> None:
+        caller = CallerContext.from_dict((metadata or {}).get("caller"))
+        task_name = str((metadata or {}).get("task_name") or "生成")
+        send_message = getattr(self.context, "send_message", None)
+        if not caller.unified_msg_origin or not callable(send_message):
+            logger.warning(f"后台任务 {job_id} 无法主动发送：缺少会话或平台能力")
+            return
+        if error is not None:
+            try:
+                await send_message(
+                    caller.unified_msg_origin,
+                    MessageChain([Comp.Plain(f"❌ {task_name}失败：{error}")]),
+                )
+            except Exception as send_error:
+                logger.warning(f"后台任务 {job_id} 失败提示发送失败: {send_error}")
+            return
+
+        components = []
+        for index, artifact in enumerate(result.media, start=1):
+            value = artifact.value
+            if isinstance(value, str) and value.startswith("http"):
+                component = (
+                    Comp.Video.fromURL(url=value)
+                    if artifact.kind == "video"
+                    else Comp.Image.fromURL(url=value)
+                )
+            else:
+                try:
+                    kind, path = await download_to_file(
+                        value,
+                        self._save_dir,
+                        f"{job_id}_{index}",
+                        self._timeout,
+                        self._proxy,
+                    )
+                except Exception as download_error:
+                    logger.warning(f"后台任务 {job_id} 媒体落盘失败: {download_error}")
+                    continue
+                component = (
+                    Comp.Video.fromFileSystem(path=path)
+                    if kind == "video"
+                    else Comp.Image.fromFileSystem(path=path)
+                )
+                value = path
+            components.append(component)
+            if artifact.kind == "image":
+                self._remember_caller_image(caller, value, task_name)
+
+        if not components:
+            try:
+                await send_message(
+                    caller.unified_msg_origin,
+                    MessageChain([Comp.Plain(f"❌ {task_name}完成但未找到可发送媒体。")]),
+                )
+            except Exception as send_error:
+                logger.warning(f"后台任务 {job_id} 空结果提示发送失败: {send_error}")
+            return
+        for component in components:
+            try:
+                await send_message(
+                    caller.unified_msg_origin,
+                    MessageChain([component]),
+                )
+            except Exception as send_error:
+                logger.warning(f"后台任务 {job_id} 媒体发送失败: {send_error}")
+            if self._multi_media_send_interval:
+                await asyncio.sleep(self._multi_media_send_interval)
+
+    def _remember_caller_image(
+        self, caller: CallerContext, value: str, source: str
+    ) -> None:
+        if not self._previous_image_enabled or not value:
+            return
+        origin = caller.unified_msg_origin or (
+            f"group:{caller.group_id}" if caller.group_id else f"user:{caller.sender_id}"
+        )
+        self._last_image_cache[f"{origin}:{caller.sender_id or 'unknown'}"] = {
+            "value": value,
+            "filename": "generated.png",
+            "source": source,
+            "time": time.time(),
+        }
+        self._prune_last_image_cache()
 
     # ---- 文生图 ----
     async def _do_text_to_image(self, event, prompt, output_count=None):
@@ -2145,4 +2548,4 @@ class ImageGenPlugin(Star):
         )
 
     async def terminate(self):
-        pass
+        await self._job_manager.terminate()

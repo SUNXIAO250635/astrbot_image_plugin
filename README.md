@@ -38,6 +38,7 @@ AstrBot `>=4.10.4` 可使用新的 `providers` 列表添加多个供应商实例
 - `generation_options.prompt_enhance_show_prompt` 是否发送优化后的提示词
 - `generation_options.prompt_plan_system_prompt` 提示词语义规划系统提示词
 - `generation_options.prompt_enhance_system_prompt` 提示词优化系统提示词
+- `generation_options.intent_plan_enabled` 是否用 Chat 判断图片/视频模式、预设和数量
 - `generation_options.image_edit_plan_enabled` 是否用 Chat 理解自然语言图生图需求
 - `generation_options.image_edit_plan_send_images` 图生图理解时是否把图片发送给 Chat
 - `generation_options.image_edit_max_images` 图生图最多读取几张图片
@@ -46,6 +47,9 @@ AstrBot `>=4.10.4` 可使用新的 `providers` 列表添加多个供应商实例
 - `access_control.deny_message` 无权限提示语
 - `image_reference.enable_previous_image` 图生图/图生视频自动复用上一张图片
 - `image_reference.previous_image_ttl` 上一张图片缓存有效期
+- `image_reference.max_reference_images` 当前请求最多解析的参考图数量
+- `jobs.foreground_wait_seconds` 前台等待时间，超时后自动转后台
+- `jobs.restore_remote_video_tasks` 插件重载后恢复已有视频 task ID 轮询
 - `media.save_dir` 保存目录（相对 `data/`）
 - `media.multi_media_send_mode` 多图/多视频发送方式，默认逐条发送
 
@@ -61,25 +65,31 @@ AstrBot `>=4.10.4` 可使用新的 `providers` 列表添加多个供应商实例
 
 > **网络与视频任务**：HTTP 连接、代理、SSL 和超时错误会转换成可读提示；视频轮询支持顶层或 `data` 内的 `task_id/id`，401/403/404 等永久错误会直接返回，不再一直重试到超时。
 
-> **图生图语义理解**：`/画 图` 会用一次 `adapter_prompt_chat` 调用同时完成语义分析、图片编号选择、结果图数量和最终提示词改写，并把理解后的提示词发给你。普通“上一张/刚才那张”单图编辑可以复用同会话同用户缓存；多图/编号/参考图/替换角色等语义必须在同一条消息里附带对应图片，不会从聊天记录或上一张缓存里拼接多图。当前消息里的图片按出现顺序编号为第一张、第二张、第三张……默认最多读取 4 张，可用 `generation_options.image_edit_max_images` 调整。如果上游图生图接口支持多图，会把选中的图片一起传给接口，否则取决于上游兼容性。
+> **前后台任务**：Router 模式下，生成在 `jobs.foreground_wait_seconds` 内完成会直接回复；超过时间会返回 job ID，底层任务不会被取消，完成后通过 AstrBot 主动消息逐条发送。远端视频的 provider 和 task ID 会写入插件 KV，插件重载后只恢复轮询，不会重新提交生成任务。
+
+> **LLM Tool**：插件注册 `generate_media` 工具。LLM 可以根据自然语言自动判断文生图、图生图、文生视频、图生视频、预设和数量；Chat 规划失败时使用本地语义判断，并继续执行原始需求。
+
+> **智能参考图**：`/画 图`、`/画 图生视频`、预设和 LLM Tool 会按顺序解析当前消息图片、显式回复图片、当前合并转发、图片群文件，以及用户明确要求的本人头像或 @ 对象头像。普通“上一张/刚才那张”单图编辑可以复用同会话同用户缓存；多图只能使用当前请求明确提供或引用的来源，不会从未引用聊天历史或上一张缓存拼接。
 
 > **白名单**：`access_control.user_whitelist` 和 `access_control.group_whitelist` 都支持用逗号、空格或换行分隔多个 ID；不填写时默认不限制。群聊白名单只限制群聊消息，私聊不会因为群聊白名单被拦截；如需限制私聊用户，请填写用户白名单。
 
-> **上一张图片**：`/画 图` 和 `/画 图生视频` 会优先使用当前消息附带的图片；当前消息未带图时，会自动使用同一会话、同一用户最近发送的图片，或本插件最近回复给该用户的图片。该缓存只用于普通单图兜底；多图/编号引用必须在同一条消息内附图。默认缓存 1800 秒，可在 `image_reference.previous_image_ttl` 调整。
+> **上一张图片**：`/画 图` 和 `/画 图生视频` 会优先使用当前请求明确提供或引用的图片；未找到时可使用同一会话、同一用户最近发送的图片，或本插件最近回复给该用户的图片。该缓存只用于普通单图兜底。默认缓存 1800 秒，可在 `image_reference.previous_image_ttl` 调整。
 
 ## 指令
 | 指令 | 说明 | 示例 |
 |---|---|---|
 | `/画 help` | 帮助 | |
 | `/画 文 <prompt>` | 文生图，可在提示词里写生成数量 | `/画 文 画三张赛博朋克猫` |
-| `/画 图 <prompt>` | 图生图（普通单图可复用上一张图片；多图必须同条消息附图），可在提示词里写结果数量 | `/画 图 基于这张图出两版水彩风格` |
+| `/画 图 <prompt>` | 图生图，支持直附、回复、转发、群文件和上一张单图缓存 | `/画 图 基于这张图出两版水彩风格` |
 | `/画 视频 <prompt>` | 文生视频 | `/画 视频 火车穿越雪山` |
 | `/画 图生视频 <prompt>` | 图生视频（可附带图片，也可复用上一张图片） | `/画 图生视频 让画面动起来` |
+| `/画 头像/海报/壁纸/卡片/手机壁纸 <prompt>` | 快速版式预设 | `/画 海报 夏日音乐节` |
+| `/画 手办化/表情包/风格转换 <prompt>` | 快速参考图预设 | `/画 手办化 做成桌面收藏手办` |
 
 > 也可使用别名：`/画 文生图`、`/画 文生视频`。
 
 ## 注意
-- 图生图会优先读取当前消息里的多张图片并按顺序编号；多图/编号引用不会读取聊天记录或上一张缓存；图生视频读取第一张图片；普通单图没有当前图片时会尝试读取上一张图片缓存。
+- 图生图会把当前请求明确提供或引用的图片按解析顺序编号；多图/编号引用不会读取未引用聊天历史或上一张缓存；图生视频默认使用第一张解析到的图片。
 - 上一张图片缓存按“会话 + 用户”隔离，群聊里不会复用其他用户发送或触发生成的图片。
 - 白名单 ID 分别对应 AstrBot 事件中的 `get_sender_id()` 和 `get_group_id()`。
 - 媒体文件保存在 `data/imagegen/` 下。

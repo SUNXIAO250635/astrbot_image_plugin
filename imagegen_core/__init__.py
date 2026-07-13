@@ -12,6 +12,9 @@ from .models import (
     ReferenceAsset,
 )
 from .service import GenerationService
+from .intent import IntentPlanner
+from .jobs import JobManager
+from .references import ReferenceResolver
 
 __all__ = [
     "CallerContext",
@@ -21,7 +24,10 @@ __all__ = [
     "GenerationRequest",
     "GenerationResult",
     "GenerationService",
+    "IntentPlanner",
+    "JobManager",
     "MediaArtifact",
     "ProviderFailure",
     "ReferenceAsset",
+    "ReferenceResolver",
 ]

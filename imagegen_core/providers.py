@@ -60,6 +60,33 @@ class OpenAICompatibleProvider:
         result.elapsed_seconds = time.monotonic() - started
         return result
 
+    async def resume(self, handle: GenerationHandle) -> GenerationResult:
+        if handle.provider_id != self.provider_id:
+            raise ProviderFailure(
+                "视频任务供应商不匹配",
+                kind=ErrorKind.INVALID_REQUEST,
+                provider_id=self.provider_id,
+                accepted=True,
+                remote_task_id=handle.remote_task_id,
+            )
+        cfg = dict(self.profile.config)
+        try:
+            response = await adapters.poll_openai_video(
+                cfg,
+                handle.remote_task_id,
+                {"task_id": handle.remote_task_id},
+                self._timeout(cfg),
+                self._proxy(cfg),
+            )
+        except adapters.ApiException as exc:
+            failure = self._provider_failure(exc)
+            failure.accepted = True
+            failure.remote_task_id = handle.remote_task_id
+            raise failure from exc
+        result = self._video_result(response)
+        result.remote_task_id = handle.remote_task_id
+        return result
+
     async def _generate_image(
         self, request: GenerationRequest, *, with_references: bool
     ) -> GenerationResult:

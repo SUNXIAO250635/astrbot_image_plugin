@@ -421,6 +421,17 @@
         "default": true,
         "hint": "只有第二步真的执行了提示词优化时才会发送；语义规划判断不需要优化时不会发送“优化后的提示词”。"
       },
+      "intent_plan_enabled": {
+        "description": "是否用 Chat 规划自然语言生成模式和预设",
+        "type": "bool",
+        "default": true,
+        "hint": "用于 generate_media LLM Tool 和快速预设；失败时自动使用本地语义判断。"
+      },
+      "intent_plan_system_prompt": {
+        "description": "多模态生成意图规划系统提示词",
+        "type": "text",
+        "default": "你是多模态图片和视频生成请求规划器。根据用户自然语言、是否有参考图和显式模式，选择 capability：text_to_image、image_to_image、text_to_video、image_to_video。识别 preset：头像、海报、壁纸、卡片、手机壁纸、手办化、表情包、风格转换；没有预设则为空。提取生成数量 count，并保留用户全部关键条件。只输出 JSON，不要 Markdown。格式：{\"capability\":\"text_to_image\",\"preset\":\"\",\"count\":1,\"prompt\":\"交给生成模型的需求\",\"reason\":\"简短原因\"}"
+      },
       "prompt_plan_system_prompt": {
         "description": "提示词语义规划系统提示词",
         "type": "text",
@@ -437,7 +448,7 @@
         "description": "是否用 Chat 理解自然语言图生图需求",
         "type": "bool",
         "default": true,
-        "hint": "开启后，会用一次 Chat 调用同时完成图生图语义分析、图片编号选择和最终提示词改写。多图/编号/参考图语义必须在当前单条消息内附图，不会从聊天记录拼接。Chat 失败时使用保守兜底判断。"
+        "hint": "开启后，会用一次 Chat 调用同时完成图生图语义分析、图片编号选择和最终提示词改写。多图可来自当前消息、显式回复、当前合并转发或群文件，不会从未引用聊天历史拼接。Chat 失败时使用保守兜底判断。"
       },
       "image_edit_plan_send_images": {
         "description": "图生图理解时是否把图片发送给 Chat",
@@ -454,7 +465,7 @@
       "image_edit_plan_system_prompt": {
         "description": "图生图自然语言理解系统提示词",
         "type": "text",
-        "default": "你是专业的图像编辑需求理解助手。用户会给出一段自然语言，可能同时带有按顺序编号的图片。请一次性完成意图判断、图片引用关系分析和最终图生图提示词改写。请理解“上一张/刚才那张/第一张图/第二张图/第 N 张图/基底/参考/替换/保留/角色特征”等指代关系。普通单图编辑可以允许使用上一张缓存；凡是用户语义上引用多张图、编号图片、参考图、基础图、替换对象、组合/融合多个来源，都必须使用当前同一条消息里的图片，不能从聊天记录拼接。如果用户要求以某一张为基础、用其他图片替换人物或参考角色特征，提示词必须明确：保留基础图的背景、构图、氛围、动作、光线和镜头关系；将基础图中的目标人物或物体按用户指定关系替换为参考图中的角色身份与外观特征，包括眼睛、脸型、发型、身材、服装、材质和显著特征；多张参考图要逐一说明用途并保持自然融合。如果用户语义上要求生成多张结果图，请把数量写入 output_image_count；没有明确要求则为 null。prompt 字段不要包含“生成几张/输出几张/返回几张”这类结果数量指令。只输出 JSON，不要 Markdown。格式：{\"requires_current_images\":true,\"required_image_count\":2,\"should_plan\":true,\"allow_cached_single_image\":false,\"prompt\":\"最终图生图提示词\",\"primary_image_index\":1,\"reference_image_indexes\":[2,3],\"output_image_count\":null,\"summary\":\"一句话说明理解结果\",\"reason\":\"简短原因\"}",
+        "default": "你是专业的图像编辑需求理解助手。用户会给出一段自然语言，并可能通过当前消息、显式回复、当前合并转发或群文件提供按顺序编号的图片。请一次性完成意图判断、图片引用关系分析和最终图生图提示词改写。请理解“上一张/刚才那张/第一张图/第二张图/第 N 张图/基底/参考/替换/保留/角色特征”等指代关系。普通单图编辑可以允许使用上一张缓存；凡是用户语义上引用多张图、编号图片、参考图、基础图、替换对象、组合/融合多个来源，都必须使用当前请求明确提供或引用的图片，不能从未引用的聊天历史或上一张缓存拼接。如果用户要求以某一张为基础、用其他图片替换人物或参考角色特征，提示词必须明确：保留基础图的背景、构图、氛围、动作、光线和镜头关系；将基础图中的目标人物或物体按用户指定关系替换为参考图中的角色身份与外观特征，包括眼睛、脸型、发型、身材、服装、材质和显著特征；多张参考图要逐一说明用途并保持自然融合。如果用户语义上要求生成多张结果图，请把数量写入 output_image_count；没有明确要求则为 null。prompt 字段不要包含“生成几张/输出几张/返回几张”这类结果数量指令。只输出 JSON，不要 Markdown。格式：{\"requires_current_images\":true,\"required_image_count\":2,\"should_plan\":true,\"allow_cached_single_image\":false,\"prompt\":\"最终图生图提示词\",\"primary_image_index\":1,\"reference_image_indexes\":[2,3],\"output_image_count\":null,\"summary\":\"一句话说明理解结果\",\"reason\":\"简短原因\"}",
         "hint": "只影响自然语言图生图理解步骤；该步骤会同时输出是否必须当前消息附图、需要几张参考图、图片编号选择、结果图数量和最终提示词。"
       }
     }
@@ -502,6 +513,34 @@
         "type": "int",
         "default": 1800,
         "hint": "默认 1800 秒。缓存只保存在内存中，插件重载后会清空。"
+      },
+      "max_reference_images": {
+        "description": "自然语言工具最多读取几张参考图",
+        "type": "int",
+        "default": 4,
+        "hint": "包含当前消息、回复、合并转发、群文件和头像来源。"
+      }
+    }
+  },
+  "jobs": {
+    "description": "前台等待与后台任务",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "超时后是否自动转后台",
+        "type": "bool",
+        "default": true
+      },
+      "foreground_wait_seconds": {
+        "description": "前台等待秒数",
+        "type": "float",
+        "default": 15,
+        "hint": "超过该时间后返回任务 ID，完成时主动发送结果；不会取消底层生成任务。"
+      },
+      "restore_remote_video_tasks": {
+        "description": "插件重载后是否恢复远端视频轮询",
+        "type": "bool",
+        "default": true
       }
     }
   },
