@@ -16,6 +16,7 @@ from .intent import IntentPlanner
 from .jobs import JobManager
 from .cleanup import CleanupManager
 from .policy import PersistentRateLimiter, RateLimitExceeded
+from .meme import SmartMemeSplitter
 from .references import ReferenceResolver
 
 __all__ = [
@@ -35,4 +36,5 @@ __all__ = [
     "RateLimitExceeded",
     "ReferenceAsset",
     "ReferenceResolver",
+    "SmartMemeSplitter",
 ]

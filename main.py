@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import asyncio
 import json
+import inspect
 import os
 import re
 import sys
@@ -136,11 +137,13 @@ try:
         GenerationService,
         JobManager,
         IntentPlanner,
+        MediaArtifact,
         PersistentRateLimiter,
         ProviderFailure,
         RateLimitExceeded,
         ReferenceAsset,
         ReferenceResolver,
+        SmartMemeSplitter,
     )
     from .imagegen_core.presets import get_preset
 except ImportError:
@@ -154,11 +157,13 @@ except ImportError:
         GenerationService,
         JobManager,
         IntentPlanner,
+        MediaArtifact,
         PersistentRateLimiter,
         ProviderFailure,
         RateLimitExceeded,
         ReferenceAsset,
         ReferenceResolver,
+        SmartMemeSplitter,
     )
     from imagegen_core.presets import get_preset
 
@@ -195,6 +200,7 @@ class ImageGenPlugin(Star):
                 cleanup_cfg.get("interval_seconds"), 3600
             ),
         )
+        self._meme_splitter = SmartMemeSplitter(self._cfg("meme_splitter"))
 
     # ------------------------------------------------------------------ #
     # 指令组 /画
@@ -616,6 +622,11 @@ class ImageGenPlugin(Star):
             output_count=output_count,
             references=assets,
             size=size,
+            postprocess=(
+                self._postprocess_meme_result
+                if selected_preset and selected_preset.key == "表情包"
+                else None
+            ),
         )
         return ([event.plain_result(notice)] if notice else []) + [result]
 
@@ -2192,6 +2203,7 @@ class ImageGenPlugin(Star):
         output_count=None,
         references: list[ReferenceAsset] = None,
         size: str = "",
+        postprocess=None,
     ) -> GenerationRequest:
         data_items = list(image_bytes) if isinstance(image_bytes, (list, tuple)) else []
         if image_bytes is not None and not isinstance(image_bytes, (list, tuple)):
@@ -2243,6 +2255,7 @@ class ImageGenPlugin(Star):
         output_count=None,
         references: list[ReferenceAsset] = None,
         size: str = "",
+        postprocess=None,
     ):
         request = self._generation_request(
             event,
@@ -2269,7 +2282,11 @@ class ImageGenPlugin(Star):
 
         async def operation(on_handle):
             try:
-                return await self._generation_service.generate(request, on_handle)
+                generated = await self._generation_service.generate(request, on_handle)
+                if postprocess is not None:
+                    processed = postprocess(generated)
+                    generated = await processed if inspect.isawaitable(processed) else processed
+                return generated
             finally:
                 await self._rate_limiter.release(lease)
 
@@ -2390,6 +2407,96 @@ class ImageGenPlugin(Star):
         }
         self._schedule_cache_persist(cache_key, self._last_image_cache[cache_key])
         self._prune_last_image_cache()
+
+    async def _postprocess_meme_result(self, result):
+        config = self._cfg("meme_splitter")
+        if not self._cfg_bool(config.get("enabled", True), True):
+            return result
+        output_dir = os.path.join(self._save_dir, "meme_slices")
+        processed = []
+        for artifact in result.media:
+            if artifact.kind != "image":
+                processed.append(artifact)
+                continue
+            stem = f"meme_{int(time.time())}_{secrets.token_hex(3)}"
+            try:
+                _kind, image_path = await download_to_file(
+                    artifact.value,
+                    self._save_dir,
+                    f"{stem}_source",
+                    self._timeout,
+                    self._proxy,
+                )
+                split = await asyncio.to_thread(
+                    self._meme_splitter.split,
+                    image_path,
+                    output_dir,
+                    stem=stem,
+                )
+                if split.method == "original" and self._cfg_bool(
+                    config.get("vision_enabled", True), True
+                ):
+                    boxes = await self._meme_vision_boxes(image_path)
+                    if boxes:
+                        split = await asyncio.to_thread(
+                            self._meme_splitter.split,
+                            image_path,
+                            output_dir,
+                            vision_boxes=boxes,
+                            stem=stem,
+                        )
+            except Exception as exc:
+                logger.warning(f"表情包切分失败，保留原图: {exc}")
+                processed.append(artifact)
+                continue
+            if split.method == "original":
+                processed.append(artifact)
+                result.warnings.append("表情包未识别到可靠切片，已保留原图")
+                continue
+            processed.extend(
+                MediaArtifact(
+                    kind="image",
+                    value=path,
+                    provider_id=artifact.provider_id or result.provider_id,
+                    temporary=True,
+                )
+                for path in split.paths
+            )
+            result.warnings.append(
+                f"表情包使用 {split.method} 切分为 {len(split.paths)} 张"
+            )
+        result.media = processed
+        return result
+
+    async def _meme_vision_boxes(self, image_path: str) -> list:
+        chat_cfg = self._chat_cfg_for_prompt_tools(
+            "你是表情包切片定位助手。识别图中的独立贴纸或表情包区域，"
+            "只输出 JSON：{\"boxes\":[{\"x\":0,\"y\":0,\"width\":100,\"height\":100}]}。"
+            "坐标可以是像素，也可以是 0 到 1 的归一化数值。"
+        )
+        if not chat_cfg.get("base_url"):
+            return []
+
+        def read_image():
+            with open(image_path, "rb") as file:
+                return file.read()
+
+        try:
+            image_bytes = await asyncio.to_thread(read_image)
+            response = await adapters.openai_chat(
+                chat_cfg,
+                "请定位所有独立表情包切片。",
+                image_bytes=image_bytes,
+                image_filename=os.path.basename(image_path),
+                timeout=self._timeout,
+                proxy=self._proxy,
+            )
+            parsed = self._extract_json_object(self._extract_chat_text(response))
+            boxes = parsed.get("boxes") if isinstance(parsed, dict) else None
+            return boxes if isinstance(boxes, list) else []
+        except Exception as exc:
+            logger.warning(f"表情包视觉定位失败: {exc}")
+            return []
 
     def _active_media_paths(self) -> list[str]:
         return [

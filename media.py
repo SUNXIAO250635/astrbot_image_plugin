@@ -45,6 +45,12 @@ def _kind_from_key_url(key: str, url: str, default: str = "") -> str:
     return default or _kind_from_url(url)
 
 
+def _is_url_or_local_path(value) -> bool:
+    return isinstance(value, str) and (
+        value.startswith("http") or os.path.exists(value)
+    )
+
+
 def extract_media(resp_json: dict) -> Optional[Tuple[str, str]]:
     """从各种接口的 JSON 响应里提取第一条 (kind, value)。"""
     medias = extract_all_media(resp_json)
@@ -71,7 +77,7 @@ def extract_all_media(resp_json: dict) -> list[Tuple[str, str]]:
     if isinstance(data, list):
         for item in data:
             # 有些接口直接返回 data[0] = "https://..."
-            if isinstance(item, str) and item.startswith("http"):
+            if _is_url_or_local_path(item):
                 add(_kind_from_url(item), item)
                 continue
             if isinstance(item, str) and item.startswith("data:"):
@@ -83,7 +89,7 @@ def extract_all_media(resp_json: dict) -> list[Tuple[str, str]]:
                 continue
             for key in ("video_url", "image_url", "url"):
                 url = item.get(key)
-                if isinstance(url, str) and url.startswith("http"):
+                if _is_url_or_local_path(url):
                     add(_kind_from_key_url(key, url), url)
                     break
                 if isinstance(url, str) and url.startswith("data:"):
@@ -100,7 +106,7 @@ def extract_all_media(resp_json: dict) -> list[Tuple[str, str]]:
     # 2) 顶层 url / video_url / image_url
     for key in ("video_url", "image_url", "url", "video", "output"):
         v = resp_json.get(key)
-        if isinstance(v, str) and v.startswith("http"):
+        if _is_url_or_local_path(v):
             add(_kind_from_key_url(key, v), v)
             return medias
         if isinstance(v, str) and "base64" in v:
@@ -118,14 +124,17 @@ def extract_all_media(resp_json: dict) -> list[Tuple[str, str]]:
             values = data_obj.get(key)
             if isinstance(values, list):
                 for value in values:
-                    if isinstance(value, str) and value.startswith(("http", "data:")):
+                    if isinstance(value, str) and (
+                        value.startswith(("http", "data:"))
+                        or os.path.exists(value)
+                    ):
                         default = "video" if "video" in key else "image"
                         add(_kind_from_key_url(key, value, default), value)
                 if medias:
                     return medias
         for key in ("result_url", "video_url", "image_url", "url"):
             v = data_obj.get(key)
-            if isinstance(v, str) and v.startswith("http"):
+            if _is_url_or_local_path(v):
                 default = "video" if key == "result_url" else ""
                 add(_kind_from_key_url(key, v, default), v)
                 return medias
@@ -135,12 +144,12 @@ def extract_all_media(resp_json: dict) -> list[Tuple[str, str]]:
             if content:
                 for key in ("video_url", "image_url", "url"):
                     v = content.get(key)
-                    if isinstance(v, str) and v.startswith("http"):
+                    if _is_url_or_local_path(v):
                         add(_kind_from_key_url(key, v), v)
                         return medias
             for key in ("video_url", "image_url", "url"):
                 v = inner.get(key)
-                if isinstance(v, str) and v.startswith("http"):
+                if _is_url_or_local_path(v):
                     add(_kind_from_key_url(key, v), v)
                     return medias
 
@@ -151,7 +160,7 @@ def extract_all_media(resp_json: dict) -> list[Tuple[str, str]]:
             continue
         for key in ("download_url", "file_url", "video_url", "image_url", "url"):
             value = container.get(key)
-            if isinstance(value, str) and value.startswith("http"):
+            if _is_url_or_local_path(value):
                 add(_kind_from_key_url(key, value), value)
                 return medias
 

@@ -6,7 +6,7 @@
 
 ## 安装
 在 AstrBot WebUI 的插件管理页面通过仓库地址安装，或 `plugin i <repo>`。
-依赖 `aiohttp`（AstrBot 通常已自带）。
+依赖 `aiohttp`（AstrBot 通常已自带）和 `Pillow`（用于表情包智能切分）。
 
 ## 配置
 插件管理 → 本插件 → 设置 中配置以下适配器（每个含 base_url / api_key / model）：
@@ -61,6 +61,7 @@ AstrBot `>=4.10.4` 可使用新的 `providers` 列表添加多个供应商实例
 - `jobs.restore_remote_video_tasks` 插件重载后恢复已有视频 task ID 轮询
 - `rate_limit.*` 用户/群周期额度、能力 cost 和并发任务租约（限制值 0 表示关闭）
 - `cleanup.*` 受管媒体目录的过期文件清理
+- `meme_splitter.*` 表情包自适应切分、视觉兜底、手动网格和透明背景参数
 - `media.save_dir` 保存目录（相对 `data/`）
 - `media.multi_media_send_mode` 多图/多视频发送方式，默认逐条发送
 
@@ -89,6 +90,8 @@ AstrBot `>=4.10.4` 可使用新的 `providers` 列表添加多个供应商实例
 > **上一张图片**：`/画 图` 和 `/画 图生视频` 会优先使用当前请求明确提供或引用的图片；未找到时可使用同一会话、同一用户最近发送的图片，或本插件最近回复给该用户的图片。该缓存只用于普通单图兜底，URL/本地文件索引会写入插件 KV。默认缓存 1800 秒，可在 `image_reference.previous_image_ttl` 调整。
 
 > **临时文件清理**：清理器只处理 `media.save_dir` 解析后的受管目录，跳过当前缓存正在引用的本地文件，不会递归删除目录外路径。默认清理超过 24 小时的媒体。
+
+> **表情包智能切分**：`/画 表情包` 会在生成后自动运行 SmartMemeSplitter。默认先使用背景颜色和黑描边连通区域进行自适应切分，再尝试 `grid_rows/grid_columns` 手动网格，最后可复用 `adapter_prompt_chat` 的视觉模型定位独立贴纸区域；所有路径都失败时保留原图，不会丢失生成结果。`transparent_background=true` 时自适应切片输出透明 PNG。可通过 `minimum_slices`、`expected_slices`、`background_tolerance`、`outline_threshold`、`connect_radius`、`min_area_ratio` 和 `padding` 调整质量门槛。
 
 ## 指令
 | 指令 | 说明 | 示例 |
