@@ -99,3 +99,25 @@ def test_image_to_video_command_passes_reference_to_video_adapter():
         assert adapter.await_args.args[3] == "input.png"
 
     asyncio.run(scenario())
+
+
+def test_legacy_mode_applies_persistent_rate_limit():
+    async def scenario():
+        config = plugin_config()
+        config["rate_limit"] = {"window_seconds": 3600, "user_limit": 1}
+        plugin = main.ImageGenPlugin(FakeContext(), config)
+        event = FakeEvent()
+        adapter = AsyncMock(
+            return_value={"data": [{"url": "https://cdn.invalid/cat.png"}]}
+        )
+
+        with patch.object(main.adapters, "image_generation", adapter):
+            first = await plugin._do_text_to_image(event, "cat")
+            second = await plugin._do_text_to_image(event, "cat again")
+
+        assert first.kind == "image"
+        assert second.kind == "plain"
+        assert "限流" in second.value
+        assert adapter.await_count == 1
+
+    asyncio.run(scenario())

@@ -31,6 +31,14 @@ class FileId:
         self.name = name
 
 
+class OneBotFile:
+    def __init__(self, file_id, busid, filename):
+        self.file_id = file_id
+        self.busid = busid
+        self.file = filename
+        self.name = filename
+
+
 class At:
     def __init__(self, target):
         self.target = target
@@ -96,6 +104,22 @@ def test_resolver_reads_direct_reply_forward_group_file_and_avatar_sources():
         assert "https://cdn.invalid/reply-signed" in values
         assert "https://cdn.invalid/group-signed" in values
         assert any("nk=123456" in value for value in values)
+
+    asyncio.run(scenario())
+
+
+def test_resolver_fetches_onebot_file_when_file_field_is_only_a_filename():
+    async def scenario():
+        event = FakeEvent([OneBotFile("file-1", "102", "remote.png")])
+        event.bot = FakeBot()
+        resolver = ReferenceResolver(_load)
+
+        assets = await resolver.resolve(event, max_images=4)
+
+        assert [asset.value for asset in assets] == [
+            "https://cdn.invalid/group-signed"
+        ]
+        assert assets[0].source == "group_file"
 
     asyncio.run(scenario())
 

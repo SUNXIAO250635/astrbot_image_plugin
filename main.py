@@ -2543,6 +2543,21 @@ class ImageGenPlugin(Star):
         except ValueError:
             return False
 
+    async def _run_legacy_with_policy(self, event, capability, operation):
+        caller = CallerContext(
+            unified_msg_origin=str(getattr(event, "unified_msg_origin", "") or ""),
+            sender_id=self._event_sender_id(event),
+            group_id=self._event_group_id(event),
+        )
+        try:
+            lease = await self._rate_limiter.acquire(caller, capability)
+        except RateLimitExceeded as exc:
+            return event.plain_result(f"❌ {exc}")
+        try:
+            return await operation()
+        finally:
+            await self._rate_limiter.release(lease)
+
     # ---- 文生图 ----
     async def _do_text_to_image(self, event, prompt, output_count=None):
         self._cleanup_manager.start(self._active_media_paths)
@@ -2554,26 +2569,32 @@ class ImageGenPlugin(Star):
                 "文生图",
                 output_count=output_count,
             )
-        base_cfg = self._cfg("adapter_image_generation")
-        cfg = self._cfg_with_output_count(base_cfg, output_count)
-        try:
-            resp = await adapters.image_generation(
-                cfg, prompt, self._timeout, proxy=self._proxy
-            )
-            resp = await self._complete_requested_media_count(
-                resp,
-                output_count,
-                lambda n: adapters.image_generation(
-                    self._cfg_with_output_count(base_cfg, n),
-                    prompt,
-                    self._timeout,
-                    proxy=self._proxy,
-                ),
-                "文生图",
-            )
-        except adapters.ApiException as e:
-            return event.plain_result(f"❌ {e}")
-        return await self._send_result(event, resp, "文生图")
+
+        async def operation():
+            base_cfg = self._cfg("adapter_image_generation")
+            cfg = self._cfg_with_output_count(base_cfg, output_count)
+            try:
+                resp = await adapters.image_generation(
+                    cfg, prompt, self._timeout, proxy=self._proxy
+                )
+                resp = await self._complete_requested_media_count(
+                    resp,
+                    output_count,
+                    lambda n: adapters.image_generation(
+                        self._cfg_with_output_count(base_cfg, n),
+                        prompt,
+                        self._timeout,
+                        proxy=self._proxy,
+                    ),
+                    "文生图",
+                )
+            except adapters.ApiException as e:
+                return event.plain_result(f"❌ {e}")
+            return await self._send_result(event, resp, "文生图")
+
+        return await self._run_legacy_with_policy(
+            event, Capability.TEXT_TO_IMAGE, operation
+        )
 
     # ---- 图生图 ----
     async def _do_image_to_image(
@@ -2590,22 +2611,47 @@ class ImageGenPlugin(Star):
                 img_name,
                 output_count,
             )
-        if strategy == "image_generation":
-            base_cfg = self._cfg("adapter_image_generation")
+
+        async def operation():
+            if strategy == "image_generation":
+                base_cfg = self._cfg("adapter_image_generation")
+                cfg = self._cfg_with_output_count(base_cfg, output_count)
+                try:
+                    resp = await adapters.image_generation(
+                        cfg, prompt, self._timeout, img_bytes, img_name, self._proxy
+                    )
+                    resp = await self._complete_requested_media_count(
+                        resp,
+                        output_count,
+                        lambda n: adapters.image_generation(
+                            self._cfg_with_output_count(base_cfg, n),
+                            prompt,
+                            self._timeout,
+                            img_bytes,
+                            img_name,
+                            self._proxy,
+                        ),
+                        "图生图",
+                    )
+                except adapters.ApiException as e:
+                    return event.plain_result(f"❌ {e}")
+                return await self._send_result(event, resp, "图生图")
+
+            base_cfg = self._cfg("adapter_image_edits")
             cfg = self._cfg_with_output_count(base_cfg, output_count)
             try:
-                resp = await adapters.image_generation(
-                    cfg, prompt, self._timeout, img_bytes, img_name, self._proxy
+                resp = await adapters.image_edits(
+                    cfg, prompt, img_bytes, img_name, self._timeout, self._proxy
                 )
                 resp = await self._complete_requested_media_count(
                     resp,
                     output_count,
-                    lambda n: adapters.image_generation(
+                    lambda n: adapters.image_edits(
                         self._cfg_with_output_count(base_cfg, n),
                         prompt,
-                        self._timeout,
                         img_bytes,
                         img_name,
+                        self._timeout,
                         self._proxy,
                     ),
                     "图生图",
@@ -2614,28 +2660,9 @@ class ImageGenPlugin(Star):
                 return event.plain_result(f"❌ {e}")
             return await self._send_result(event, resp, "图生图")
 
-        base_cfg = self._cfg("adapter_image_edits")
-        cfg = self._cfg_with_output_count(base_cfg, output_count)
-        try:
-            resp = await adapters.image_edits(
-                cfg, prompt, img_bytes, img_name, self._timeout, self._proxy
-            )
-            resp = await self._complete_requested_media_count(
-                resp,
-                output_count,
-                lambda n: adapters.image_edits(
-                    self._cfg_with_output_count(base_cfg, n),
-                    prompt,
-                    img_bytes,
-                    img_name,
-                    self._timeout,
-                    self._proxy,
-                ),
-                "图生图",
-            )
-        except adapters.ApiException as e:
-            return event.plain_result(f"❌ {e}")
-        return await self._send_result(event, resp, "图生图")
+        return await self._run_legacy_with_policy(
+            event, Capability.IMAGE_TO_IMAGE, operation
+        )
 
     # ---- 文生视频 ----
     async def _do_text_to_video(self, event, prompt, strategy):
@@ -2647,22 +2674,29 @@ class ImageGenPlugin(Star):
                 prompt,
                 "文生视频",
             )
-        if strategy == "openai_chat":
-            cfg = self._cfg("adapter_openai_chat")
+
+        async def operation():
+            if strategy == "openai_chat":
+                cfg = self._cfg("adapter_openai_chat")
+                try:
+                    resp = await adapters.openai_chat(
+                        cfg, prompt, timeout=self._timeout, proxy=self._proxy
+                    )
+                except adapters.ApiException as e:
+                    return event.plain_result(f"❌ {e}")
+                return await self._send_result(event, resp, "文生视频", expect="video")
+            cfg = self._cfg("adapter_openai_video")
             try:
-                resp = await adapters.openai_chat(
-                    cfg, prompt, timeout=self._timeout, proxy=self._proxy
+                resp = await adapters.openai_video(
+                    cfg, prompt, None, None, self._timeout, self._proxy
                 )
             except adapters.ApiException as e:
                 return event.plain_result(f"❌ {e}")
             return await self._send_result(event, resp, "文生视频", expect="video")
-        cfg = self._cfg("adapter_openai_video")
-        try:
-            resp = await adapters.openai_video(cfg, prompt, None, None,
-                                              self._timeout, self._proxy)
-        except adapters.ApiException as e:
-            return event.plain_result(f"❌ {e}")
-        return await self._send_result(event, resp, "文生视频", expect="video")
+
+        return await self._run_legacy_with_policy(
+            event, Capability.TEXT_TO_VIDEO, operation
+        )
 
     # ---- 图生视频 ----
     async def _do_image_to_video(self, event, prompt, img_bytes, img_name, strategy):
@@ -2676,22 +2710,29 @@ class ImageGenPlugin(Star):
                 img_bytes,
                 img_name,
             )
-        if strategy == "image_edits":
-            cfg = self._cfg("adapter_image_edits")
+
+        async def operation():
+            if strategy == "image_edits":
+                cfg = self._cfg("adapter_image_edits")
+                try:
+                    resp = await adapters.image_edits(
+                        cfg, prompt, img_bytes, img_name, self._timeout, self._proxy
+                    )
+                except adapters.ApiException as e:
+                    return event.plain_result(f"❌ {e}")
+                return await self._send_result(event, resp, "图生视频", expect="video")
+            cfg = self._cfg("adapter_openai_video")
             try:
-                resp = await adapters.image_edits(
+                resp = await adapters.openai_video(
                     cfg, prompt, img_bytes, img_name, self._timeout, self._proxy
                 )
             except adapters.ApiException as e:
                 return event.plain_result(f"❌ {e}")
             return await self._send_result(event, resp, "图生视频", expect="video")
-        cfg = self._cfg("adapter_openai_video")
-        try:
-            resp = await adapters.openai_video(cfg, prompt, img_bytes, img_name,
-                                              self._timeout, self._proxy)
-        except adapters.ApiException as e:
-            return event.plain_result(f"❌ {e}")
-        return await self._send_result(event, resp, "图生视频", expect="video")
+
+        return await self._run_legacy_with_policy(
+            event, Capability.IMAGE_TO_VIDEO, operation
+        )
 
     # ---- 通用：解析并发送媒体 ----
     async def _send_result(self, event, resp, task_name, expect=None):

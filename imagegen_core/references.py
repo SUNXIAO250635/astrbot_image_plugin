@@ -178,6 +178,20 @@ def _candidate_from_component(component, source: str):
         or getattr(component, "name", None)
         or _filename(str(value or ""))
     )
+    remote_file_id = getattr(component, "file_id", None) or getattr(
+        component, "id", None
+    )
+    value_text = str(value or "")
+    if (
+        "file" in name
+        and remote_file_id
+        and value_text
+        and not value_text.startswith(
+            ("http://", "https://", "data:image/", "base64://", "file://")
+        )
+        and not os.path.exists(value_text)
+    ):
+        return None
     is_image = "image" in name or "photo" in name
     is_file_image = "file" in name and str(filename).lower().endswith(IMAGE_EXTENSIONS)
     if value and (is_image or is_file_image or _looks_like_image(str(value))):
@@ -280,13 +294,25 @@ def _group_file_ids(event) -> list[tuple[str, str, str]]:
             or getattr(component, "name", None)
             or ""
         )
+        file_id = getattr(component, "file_id", None) or getattr(component, "id", None)
+        busid = getattr(component, "busid", None) or getattr(component, "bus_id", None)
+        direct_value = str(direct or "")
+        direct_is_resolvable = bool(
+            direct_value.startswith(("http://", "https://", "data:image/", "base64://", "file://"))
+            or os.path.exists(direct_value)
+        )
+        if (
+            file_id
+            and filename.lower().endswith(IMAGE_EXTENSIONS)
+            and not direct_is_resolvable
+        ):
+            result.append((str(file_id), str(busid or ""), filename))
+            continue
         if direct and (
             _looks_like_image(str(direct))
             or filename.lower().endswith(IMAGE_EXTENSIONS)
         ):
             continue
-        file_id = getattr(component, "file_id", None) or getattr(component, "id", None)
-        busid = getattr(component, "busid", None) or getattr(component, "bus_id", None)
         if file_id and filename.lower().endswith(IMAGE_EXTENSIONS):
             result.append((str(file_id), str(busid or ""), filename))
     return result
@@ -307,18 +333,27 @@ async def _fetch_group_file_url(event, file_id: str, busid: str) -> str:
         method = getattr(obj, "get_group_file_url", None) if obj else None
         if not callable(method):
             continue
-        try:
-            result = method(group_id=group_id, file_id=file_id, busid=busid)
-            result = await result if inspect.isawaitable(result) else result
-        except Exception:
-            continue
-        if isinstance(result, str):
-            return result
-        if isinstance(result, dict):
-            data = result.get("data") if isinstance(result.get("data"), dict) else result
-            url = data.get("url") if isinstance(data, dict) else None
-            if url:
-                return str(url)
+        calls = [
+            {"group_id": group_id, "file_id": file_id, "busid": busid},
+            {"group_id": group_id, "file_id": file_id},
+            {"file_id": file_id, "busid": busid},
+            {"file_id": file_id},
+        ]
+        for kwargs in calls:
+            try:
+                result = method(**kwargs)
+                result = await result if inspect.isawaitable(result) else result
+            except TypeError:
+                continue
+            except Exception:
+                break
+            if isinstance(result, str):
+                return result
+            if isinstance(result, dict):
+                data = result.get("data") if isinstance(result.get("data"), dict) else result
+                url = data.get("url") if isinstance(data, dict) else None
+                if url:
+                    return str(url)
     return ""
 
 

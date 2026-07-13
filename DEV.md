@@ -99,7 +99,7 @@ astrbot_plugin_imagegen/
 
 Router 支持显式 provider 顺序、`type:<provider_type>` 占位、同类型优先级、round-robin、失败阈值、冷却时间和最大尝试数。网络错误、限流、服务端错误与媒体解析错误可切换后备供应商。远端任务已被接受后，除非明确开启终态失败切换，否则不会创建重复任务。
 
-`compatibility.mode=legacy` 保留四个旧适配器的直接调用路径。默认使用 `router`；`providers` 留空时 Router 会从旧配置生成 legacy profiles。
+`compatibility.mode=legacy` 保留四个旧适配器的直接调用路径。默认使用 `router`；`providers` 留空时 Router 会从旧配置生成 legacy profiles。legacy 路径仍执行相同的持久限流、并发租约和媒体目录清理策略。
 
 ## 6. SmartMemeSplitter
 
