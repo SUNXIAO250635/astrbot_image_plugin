@@ -198,6 +198,17 @@
               "sensenova"
             ]
           },
+          "protocol": {
+            "description": "接口协议",
+            "type": "string",
+            "default": "openai_compat",
+            "options": [
+              "openai_compat",
+              "gemini",
+              "generic_json"
+            ],
+            "hint": "Google Gemini 自动使用 gemini；MiniMax/SenseNova 自动使用 generic_json，其余默认 OpenAI 兼容。"
+          },
           "enabled": {
             "description": "是否启用",
             "type": "bool",
@@ -293,6 +304,33 @@
             "description": "代理地址",
             "type": "string",
             "default": ""
+          },
+          "image_path": {
+            "description": "通用 JSON 图片提交路径",
+            "type": "string",
+            "default": ""
+          },
+          "video_path": {
+            "description": "通用 JSON 视频提交路径",
+            "type": "string",
+            "default": ""
+          },
+          "poll_path": {
+            "description": "通用 JSON 轮询路径",
+            "type": "string",
+            "default": "",
+            "hint": "使用 {task_id} 占位，例如 /v1/tasks/{task_id}。"
+          },
+          "result_path": {
+            "description": "任务完成后的文件查询路径",
+            "type": "string",
+            "default": "",
+            "hint": "可使用 {file_id} 占位。"
+          },
+          "extra_json": {
+            "description": "额外请求字段",
+            "type": "dict",
+            "default": {}
           }
         }
       }

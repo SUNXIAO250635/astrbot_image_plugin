@@ -65,7 +65,7 @@ def parse_capabilities(value, provider_type: str = "") -> frozenset[Capability]:
     }
     if parsed:
         return frozenset(parsed)
-    if provider_type in {"openai_images", "xai", "gemini"}:
+    if provider_type in {"openai_images", "xai", "gemini", "google_gemini"}:
         return frozenset(
             {Capability.TEXT_TO_IMAGE, Capability.IMAGE_TO_IMAGE}
         )

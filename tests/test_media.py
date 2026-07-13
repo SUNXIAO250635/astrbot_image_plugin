@@ -25,6 +25,15 @@ def test_extracts_nested_newapi_video_result():
     ]
 
 
+def test_extracts_native_image_url_array_and_file_download_url():
+    assert extract_all_media(
+        {"data": {"image_urls": ["https://cdn.invalid/native.png"]}}
+    ) == [("image", "https://cdn.invalid/native.png")]
+    assert extract_all_media(
+        {"file": {"download_url": "https://cdn.invalid/native.mp4"}}
+    ) == [("video", "https://cdn.invalid/native.mp4")]
+
+
 def test_extracts_multiple_media_urls_from_chat_content():
     response = {
         "choices": [

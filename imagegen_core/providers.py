@@ -321,5 +321,7 @@ class OpenAICompatibleProvider:
         )
 
 
-def build_providers(profiles: list[ProviderProfile]) -> list[OpenAICompatibleProvider]:
-    return [OpenAICompatibleProvider(profile) for profile in profiles if profile.enabled]
+def build_providers(profiles: list[ProviderProfile]):
+    from .native_providers import build_provider
+
+    return [build_provider(profile) for profile in profiles if profile.enabled]

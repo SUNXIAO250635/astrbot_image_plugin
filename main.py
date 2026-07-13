@@ -163,7 +163,7 @@ except ImportError:
     from imagegen_core.presets import get_preset
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.5.0",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.6.0",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):

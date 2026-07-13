@@ -114,6 +114,15 @@ def extract_all_media(resp_json: dict) -> list[Tuple[str, str]]:
     #     "data":{"content":{"video_url":"https://...mp4"}, ...}}}
     data_obj = resp_json.get("data") if isinstance(resp_json.get("data"), dict) else None
     if data_obj:
+        for key in ("image_urls", "images", "video_urls", "videos"):
+            values = data_obj.get(key)
+            if isinstance(values, list):
+                for value in values:
+                    if isinstance(value, str) and value.startswith(("http", "data:")):
+                        default = "video" if "video" in key else "image"
+                        add(_kind_from_key_url(key, value, default), value)
+                if medias:
+                    return medias
         for key in ("result_url", "video_url", "image_url", "url"):
             v = data_obj.get(key)
             if isinstance(v, str) and v.startswith("http"):
@@ -134,6 +143,17 @@ def extract_all_media(resp_json: dict) -> list[Tuple[str, str]]:
                 if isinstance(v, str) and v.startswith("http"):
                     add(_kind_from_key_url(key, v), v)
                     return medias
+
+    # 2.6) 文件下载/原生供应商常见结构
+    for container_key in ("file", "result", "output"):
+        container = resp_json.get(container_key)
+        if not isinstance(container, dict):
+            continue
+        for key in ("download_url", "file_url", "video_url", "image_url", "url"):
+            value = container.get(key)
+            if isinstance(value, str) and value.startswith("http"):
+                add(_kind_from_key_url(key, value), value)
+                return medias
 
     # 3) chat completions：从 choices[0].message.content 文本里提取 URL
     choices = resp_json.get("choices")
