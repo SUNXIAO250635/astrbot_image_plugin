@@ -415,7 +415,7 @@ def test_job_manager_logs_kv_failures(caplog):
     assert "Failed to delete plugin KV key delete-key" in caplog.text
 
 
-def test_figurine_preset_uses_image_to_image_and_preset_size():
+def test_figurine_preset_uses_image_to_image_and_provider_size():
     async def scenario():
         config = plugin_config()
         config["jobs"] = {"enabled": False}
@@ -436,7 +436,7 @@ def test_figurine_preset_uses_image_to_image_and_preset_size():
 
         request = generate.await_args.args[0]
         assert request.capability == Capability.IMAGE_TO_IMAGE
-        assert request.size == "1024x1024"
+        assert request.size == ""
         assert request.references[0].data == b"figure"
         assert results[-1].kind == "image"
 

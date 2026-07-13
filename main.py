@@ -420,26 +420,31 @@ class ImageGenPlugin(Star):
 
     @image_group.command("头像")
     async def preset_avatar(self, event: AstrMessageEvent, prompt: str = ""):
+        """按头像预设生成图片，输出尺寸沿用当前供应商配置。"""
         for result in await self._run_natural_generation(event, prompt, preset="头像"):
             yield result
 
     @image_group.command("海报")
     async def preset_poster(self, event: AstrMessageEvent, prompt: str = ""):
+        """按海报预设生成图片，输出尺寸沿用当前供应商配置。"""
         for result in await self._run_natural_generation(event, prompt, preset="海报"):
             yield result
 
     @image_group.command("壁纸")
     async def preset_wallpaper(self, event: AstrMessageEvent, prompt: str = ""):
+        """按桌面壁纸预设生成图片，输出尺寸沿用当前供应商配置。"""
         for result in await self._run_natural_generation(event, prompt, preset="壁纸"):
             yield result
 
     @image_group.command("卡片")
     async def preset_card(self, event: AstrMessageEvent, prompt: str = ""):
+        """按卡片设计预设生成图片，输出尺寸沿用当前供应商配置。"""
         for result in await self._run_natural_generation(event, prompt, preset="卡片"):
             yield result
 
     @image_group.command("手机壁纸")
     async def preset_phone_wallpaper(self, event: AstrMessageEvent, prompt: str = ""):
+        """按手机壁纸预设生成图片，输出尺寸沿用当前供应商配置。"""
         for result in await self._run_natural_generation(
             event, prompt, preset="手机壁纸"
         ):
@@ -447,6 +452,7 @@ class ImageGenPlugin(Star):
 
     @image_group.command("手办化", alias={"手办"})
     async def preset_figurine(self, event: AstrMessageEvent, prompt: str = ""):
+        """使用参考图生成手办化效果。"""
         for result in await self._run_natural_generation(
             event, prompt, preset="手办化"
         ):
@@ -454,6 +460,7 @@ class ImageGenPlugin(Star):
 
     @image_group.command("表情包", alias={"贴纸"})
     async def preset_meme(self, event: AstrMessageEvent, prompt: str = ""):
+        """生成并自动切分表情包或贴纸图片。"""
         for result in await self._run_natural_generation(
             event, prompt, preset="表情包"
         ):
@@ -461,6 +468,7 @@ class ImageGenPlugin(Star):
 
     @image_group.command("风格转换", alias={"转风格"})
     async def preset_style(self, event: AstrMessageEvent, prompt: str = ""):
+        """使用参考图转换视觉风格并保留主体构图。"""
         for result in await self._run_natural_generation(
             event, prompt, preset="风格转换"
         ):
@@ -657,10 +665,8 @@ class ImageGenPlugin(Star):
                 event.plain_result("❌ 该生成需求需要参考图片，但没有找到可用图片。")
             ]
         generation_prompt = plan.prompt
-        size = ""
         if selected_preset:
             generation_prompt = selected_preset.apply(generation_prompt)
-            size = selected_preset.default_size
         if not generation_prompt:
             return [event.plain_result("❌ 请提供生成或编辑需求。")]
 
@@ -698,7 +704,6 @@ class ImageGenPlugin(Star):
             task_names[plan.capability],
             output_count=output_count,
             references=assets,
-            size=size,
             postprocess=(
                 self._postprocess_meme_result
                 if selected_preset and selected_preset.key == "表情包"

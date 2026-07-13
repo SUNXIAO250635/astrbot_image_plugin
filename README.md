@@ -68,6 +68,8 @@ AstrBot `>=4.10.4` 可使用新的 `providers` 列表添加多个供应商实例
 - `media.save_dir` 保存目录（必须是相对 `data/` 的子目录；绝对路径或 `..` 越界会回退为 `data/imagegen`）
 - `media.multi_media_send_mode` 多图/多视频发送方式，默认逐条发送
 
+头像、海报、壁纸、卡片、手机壁纸、手办化、表情包和风格转换预设只追加构图/风格提示，不覆盖供应商或旧版适配器中配置的 `size`。
+
 > **图片尺寸**：`adapter_image_generation.size` / `adapter_image_edits.size` 为可手填文本框，支持任意尺寸（如 `1024x1024` / `2048x1152` / `4096x4096`，或 `16:9` 等比例）。最终能否真正输出该尺寸取决于上游渠道/模型支持，请按模型说明填写。
 
 > **Seedream 4.5**：`doubao-seedream-4.5` 在 `/v1/images/generations` 同时支持文生图和图生图。使用它做图生图时，把 `generation_options.image_to_image_strategy` 设为 `image_generation`，`adapter_image_generation.model` 设为 `doubao-seedream-4.5`，`adapter_image_generation.size` 建议从 `1920x1920` 起。`adapter_image_generation.watermark` 默认是 `false`，即默认请求无水印输出；非 Seedream 模型使用 false 时会自动省略该字段，避免接口不兼容。
