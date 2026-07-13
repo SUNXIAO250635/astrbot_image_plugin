@@ -44,12 +44,15 @@ AstrBot `>=4.10.4` 可使用新的 `providers` 列表添加多个供应商实例
 - `generation_options.image_edit_max_images` 图生图最多读取几张图片
 - `access_control.user_whitelist` 用户白名单（可空；留空不限制用户）
 - `access_control.group_whitelist` 群聊白名单（可空；留空不限制群聊）
+- `access_control.user_blacklist` / `group_blacklist` 黑名单（优先于白名单）
 - `access_control.deny_message` 无权限提示语
 - `image_reference.enable_previous_image` 图生图/图生视频自动复用上一张图片
 - `image_reference.previous_image_ttl` 上一张图片缓存有效期
 - `image_reference.max_reference_images` 当前请求最多解析的参考图数量
 - `jobs.foreground_wait_seconds` 前台等待时间，超时后自动转后台
 - `jobs.restore_remote_video_tasks` 插件重载后恢复已有视频 task ID 轮询
+- `rate_limit.*` 用户/群周期额度、能力 cost 和并发任务租约（限制值 0 表示关闭）
+- `cleanup.*` 受管媒体目录的过期文件清理
 - `media.save_dir` 保存目录（相对 `data/`）
 - `media.multi_media_send_mode` 多图/多视频发送方式，默认逐条发送
 
@@ -73,7 +76,11 @@ AstrBot `>=4.10.4` 可使用新的 `providers` 列表添加多个供应商实例
 
 > **白名单**：`access_control.user_whitelist` 和 `access_control.group_whitelist` 都支持用逗号、空格或换行分隔多个 ID；不填写时默认不限制。群聊白名单只限制群聊消息，私聊不会因为群聊白名单被拦截；如需限制私聊用户，请填写用户白名单。
 
-> **上一张图片**：`/画 图` 和 `/画 图生视频` 会优先使用当前请求明确提供或引用的图片；未找到时可使用同一会话、同一用户最近发送的图片，或本插件最近回复给该用户的图片。该缓存只用于普通单图兜底。默认缓存 1800 秒，可在 `image_reference.previous_image_ttl` 调整。
+> **黑名单与限流**：用户/群黑名单优先于白名单。周期额度和并发限制使用 AstrBot 插件 KV；图片默认 cost 为 1、视频为 3，但所有限制值默认是 0，不填写不会限制现有用户。Router 内部切换后备供应商只算一次用户请求。
+
+> **上一张图片**：`/画 图` 和 `/画 图生视频` 会优先使用当前请求明确提供或引用的图片；未找到时可使用同一会话、同一用户最近发送的图片，或本插件最近回复给该用户的图片。该缓存只用于普通单图兜底，URL/本地文件索引会写入插件 KV。默认缓存 1800 秒，可在 `image_reference.previous_image_ttl` 调整。
+
+> **临时文件清理**：清理器只处理 `media.save_dir` 解析后的受管目录，跳过当前缓存正在引用的本地文件，不会递归删除目录外路径。默认清理超过 24 小时的媒体。
 
 ## 指令
 | 指令 | 说明 | 示例 |

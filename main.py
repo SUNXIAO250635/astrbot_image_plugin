@@ -131,11 +131,14 @@ try:
     from .imagegen_core import (
         CallerContext,
         Capability,
+        CleanupManager,
         GenerationRequest,
         GenerationService,
         JobManager,
         IntentPlanner,
+        PersistentRateLimiter,
         ProviderFailure,
+        RateLimitExceeded,
         ReferenceAsset,
         ReferenceResolver,
     )
@@ -146,18 +149,21 @@ except ImportError:
     from imagegen_core import (
         CallerContext,
         Capability,
+        CleanupManager,
         GenerationRequest,
         GenerationService,
         JobManager,
         IntentPlanner,
+        PersistentRateLimiter,
         ProviderFailure,
+        RateLimitExceeded,
         ReferenceAsset,
         ReferenceResolver,
     )
     from imagegen_core.presets import get_preset
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.4.0",
+@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.5.0",
           repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -174,6 +180,20 @@ class ImageGenPlugin(Star):
                 jobs_cfg.get("foreground_wait_seconds"), 15.0, 0.01, 300.0
             ),
             enabled=self._cfg_bool(jobs_cfg.get("enabled", True), True),
+        )
+        self._rate_limiter = PersistentRateLimiter(
+            self, self._cfg("rate_limit")
+        )
+        cleanup_cfg = self._cfg("cleanup")
+        self._cleanup_manager = CleanupManager(
+            self._save_dir,
+            enabled=self._cfg_bool(cleanup_cfg.get("enabled", True), True),
+            ttl_seconds=self._to_positive_int(
+                cleanup_cfg.get("temp_ttl_seconds"), 86400
+            ),
+            interval_seconds=self._to_positive_int(
+                cleanup_cfg.get("interval_seconds"), 3600
+            ),
         )
 
     # ------------------------------------------------------------------ #
@@ -1694,7 +1714,13 @@ class ImageGenPlugin(Star):
         return text
 
     def _access_denied_result(self, event: AstrMessageEvent):
-        """检查用户/群聊白名单；白名单为空时默认不限制。"""
+        """检查用户/群聊黑白名单；黑名单优先，白名单为空不限制。"""
+        user_blacklist = self._split_id_list(
+            self._cfg_value("user_blacklist", "", "access_control")
+        )
+        group_blacklist = self._split_id_list(
+            self._cfg_value("group_blacklist", "", "access_control")
+        )
         user_whitelist = self._split_id_list(
             self._cfg_value("user_whitelist", "", "access_control")
         )
@@ -1708,6 +1734,14 @@ class ImageGenPlugin(Star):
 
         sender_id = self._event_sender_id(event)
         group_id = self._event_group_id(event)
+
+        if user_blacklist and sender_id in user_blacklist:
+            logger.info(f"拒绝黑名单用户使用生图插件: user={sender_id}")
+            return event.plain_result(deny_message)
+
+        if group_blacklist and group_id and group_id in group_blacklist:
+            logger.info(f"拒绝黑名单群聊使用生图插件: group={group_id}")
+            return event.plain_result(deny_message)
 
         if user_whitelist and sender_id not in user_whitelist:
             logger.info(f"拒绝非白名单用户使用生图插件: user={sender_id}")
@@ -1788,7 +1822,56 @@ class ImageGenPlugin(Star):
             "source": source,
             "time": time.time(),
         }
+        self._schedule_cache_persist(
+            self._cache_key(event), self._last_image_cache[self._cache_key(event)]
+        )
         self._prune_last_image_cache()
+
+    def _schedule_cache_persist(self, cache_key: str, item: dict) -> None:
+        value = str(item.get("value") or "")
+        if not value or value.startswith(("base64://", "data:")):
+            return
+        method = getattr(self, "put_kv_data", None)
+        if not callable(method):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(
+            self._persist_cached_image(cache_key, dict(item)),
+            name="imagegen-cache-persist",
+        )
+
+    async def _persist_cached_image(self, cache_key: str, item: dict) -> None:
+        try:
+            await self.put_kv_data(f"imagegen_last_image:{cache_key}", item)
+        except Exception as exc:
+            logger.warning(f"持久化上一张图片索引失败: {exc}")
+
+    async def _restore_cached_image(self, event: AstrMessageEvent) -> None:
+        cache_key = self._cache_key(event)
+        if cache_key in self._last_image_cache:
+            return
+        method = getattr(self, "get_kv_data", None)
+        if not callable(method):
+            return
+        try:
+            item = await method(f"imagegen_last_image:{cache_key}", None)
+        except Exception:
+            return
+        if not isinstance(item, dict) or not item.get("value"):
+            return
+        ttl = self._previous_image_ttl
+        if ttl and time.time() - float(item.get("time", 0)) > ttl:
+            delete = getattr(self, "delete_kv_data", None)
+            if callable(delete):
+                try:
+                    await delete(f"imagegen_last_image:{cache_key}")
+                except Exception:
+                    pass
+            return
+        self._last_image_cache[cache_key] = item
 
     def _get_cached_image_ref(self, event: AstrMessageEvent) -> tuple:
         if not self._previous_image_enabled:
@@ -1970,6 +2053,14 @@ class ImageGenPlugin(Star):
             max_images=max(1, limit),
             cached_loader=cached_loader,
             allow_cached=allow_cached,
+            max_single_bytes=self._to_positive_int(
+                self._cfg("image_reference").get("max_single_image_bytes"),
+                20 * 1024 * 1024,
+            ),
+            max_total_bytes=self._to_positive_int(
+                self._cfg("image_reference").get("max_total_image_bytes"),
+                50 * 1024 * 1024,
+            ),
         )
         items = [
             {
@@ -1993,6 +2084,7 @@ class ImageGenPlugin(Star):
 
     async def _get_cached_image_items(self, event: AstrMessageEvent) -> list:
         """只读取同会话同用户上一张图片缓存。"""
+        await self._restore_cached_image(event)
         cached_ref = self._get_cached_image_ref(event)
         if cached_ref[0]:
             data, filename = await self._load_image_bytes(*cached_ref)
@@ -2167,6 +2259,20 @@ class ImageGenPlugin(Star):
             "capability": capability.value,
             "caller": request.caller.to_dict(),
         }
+        self._cleanup_manager.start(self._active_media_paths)
+        try:
+            lease = await self._rate_limiter.acquire(
+                request.caller, request.capability
+            )
+        except RateLimitExceeded as exc:
+            return event.plain_result(f"❌ {exc}")
+
+        async def operation(on_handle):
+            try:
+                return await self._generation_service.generate(request, on_handle)
+            finally:
+                await self._rate_limiter.release(lease)
+
         try:
             jobs_cfg = self._cfg("jobs")
             if self._cfg_bool(
@@ -2177,7 +2283,7 @@ class ImageGenPlugin(Star):
                     self._background_job_completed,
                 )
             job_run = await self._job_manager.run(
-                lambda on_handle: self._generation_service.generate(request, on_handle),
+                operation,
                 self._background_job_completed,
                 metadata,
             )
@@ -2275,13 +2381,22 @@ class ImageGenPlugin(Star):
         origin = caller.unified_msg_origin or (
             f"group:{caller.group_id}" if caller.group_id else f"user:{caller.sender_id}"
         )
-        self._last_image_cache[f"{origin}:{caller.sender_id or 'unknown'}"] = {
+        cache_key = f"{origin}:{caller.sender_id or 'unknown'}"
+        self._last_image_cache[cache_key] = {
             "value": value,
             "filename": "generated.png",
             "source": source,
             "time": time.time(),
         }
+        self._schedule_cache_persist(cache_key, self._last_image_cache[cache_key])
         self._prune_last_image_cache()
+
+    def _active_media_paths(self) -> list[str]:
+        return [
+            str(item.get("value"))
+            for item in self._last_image_cache.values()
+            if item.get("value") and os.path.exists(str(item.get("value")))
+        ]
 
     # ---- 文生图 ----
     async def _do_text_to_image(self, event, prompt, output_count=None):
@@ -2549,3 +2664,4 @@ class ImageGenPlugin(Star):
 
     async def terminate(self):
         await self._job_manager.terminate()
+        await self._cleanup_manager.stop()

@@ -32,6 +32,17 @@ class _Context:
 class _Star:
     def __init__(self, context):
         self.context = context
+        if not hasattr(context, "_plugin_kv"):
+            context._plugin_kv = {}
+
+    async def get_kv_data(self, key, default=None):
+        return self.context._plugin_kv.get(key, default)
+
+    async def put_kv_data(self, key, value):
+        self.context._plugin_kv[key] = value
+
+    async def delete_kv_data(self, key):
+        self.context._plugin_kv.pop(key, None)
 
 
 class _AstrMessageEvent:

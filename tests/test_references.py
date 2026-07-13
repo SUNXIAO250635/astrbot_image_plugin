@@ -127,3 +127,25 @@ def test_resolver_uses_cache_only_when_no_message_reference_exists():
         assert all(asset.source != "cache" for asset in direct_assets)
 
     asyncio.run(scenario())
+
+
+def test_resolver_enforces_single_and_total_byte_limits():
+    async def scenario():
+        resolver = ReferenceResolver(_load)
+        event = FakeEvent(
+            [
+                Comp.Image(file="https://cdn.invalid/123456.png"),
+                Comp.Image(file="https://cdn.invalid/abcdef.png"),
+            ]
+        )
+
+        assets = await resolver.resolve(
+            event,
+            max_images=4,
+            max_single_bytes=100,
+            max_total_bytes=35,
+        )
+
+        assert len(assets) == 1
+
+    asyncio.run(scenario())

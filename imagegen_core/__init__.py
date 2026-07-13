@@ -14,10 +14,13 @@ from .models import (
 from .service import GenerationService
 from .intent import IntentPlanner
 from .jobs import JobManager
+from .cleanup import CleanupManager
+from .policy import PersistentRateLimiter, RateLimitExceeded
 from .references import ReferenceResolver
 
 __all__ = [
     "CallerContext",
+    "CleanupManager",
     "Capability",
     "ErrorKind",
     "GenerationHandle",
@@ -28,6 +31,8 @@ __all__ = [
     "JobManager",
     "MediaArtifact",
     "ProviderFailure",
+    "PersistentRateLimiter",
+    "RateLimitExceeded",
     "ReferenceAsset",
     "ReferenceResolver",
 ]

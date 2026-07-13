@@ -34,6 +34,8 @@ class ReferenceResolver:
         max_images: int = 4,
         cached_loader: CachedReference | None = None,
         allow_cached: bool = False,
+        max_single_bytes: int = 20 * 1024 * 1024,
+        max_total_bytes: int = 50 * 1024 * 1024,
     ) -> list[ReferenceAsset]:
         candidates = self._extract_chain(event, "current")
         candidates.extend(await self._extract_platform_references(event))
@@ -54,10 +56,14 @@ class ReferenceResolver:
         owner_id = _sender_id(event)
         session_id = str(getattr(event, "unified_msg_origin", "") or "")
         assets = []
+        total_bytes = 0
         for index, candidate in enumerate(candidates[: max(1, max_images)], start=1):
             data, filename = await self.load_image(candidate.value, candidate.filename)
             if not data:
                 continue
+            if len(data) > max_single_bytes or total_bytes + len(data) > max_total_bytes:
+                continue
+            total_bytes += len(data)
             assets.append(
                 ReferenceAsset(
                     index=index,
