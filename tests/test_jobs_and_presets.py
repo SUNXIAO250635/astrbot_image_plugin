@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from unittest.mock import AsyncMock, patch
 
@@ -419,6 +420,7 @@ def test_figurine_preset_uses_image_to_image_and_provider_size():
     async def scenario():
         config = plugin_config()
         config["jobs"] = {"enabled": False}
+        config["compatibility"] = {"mode": "router"}
         config["generation_options"]["intent_plan_enabled"] = False
         plugin = main.ImageGenPlugin(FakeContext(), config)
         event = FakeEvent([Comp.Image(file=image_data_uri(b"figure"))])
@@ -443,10 +445,236 @@ def test_figurine_preset_uses_image_to_image_and_provider_size():
     asyncio.run(scenario())
 
 
+def test_preset_legacy_mode_uses_legacy_adapter_runner():
+    async def scenario():
+        config = plugin_config()
+        config["jobs"] = {"enabled": False}
+        config["generation_options"]["intent_plan_enabled"] = False
+        plugin = main.ImageGenPlugin(FakeContext(), config)
+        event = FakeEvent()
+        plugin._legacy_runner.text_to_image = AsyncMock(
+            return_value={"data": [{"url": "https://cdn.invalid/poster.png"}]}
+        )
+        plugin._generation_service.generate = AsyncMock()
+
+        results = await collect_async_generator(
+            plugin.preset_poster(event, "夏日音乐节")
+        )
+
+        plugin._legacy_runner.text_to_image.assert_awaited_once()
+        plugin._generation_service.generate.assert_not_awaited()
+        assert results[-1].kind == "image"
+
+    asyncio.run(scenario())
+
+
+def test_legacy_meme_preset_keeps_postprocessing():
+    async def scenario():
+        config = plugin_config()
+        config["jobs"] = {"enabled": False}
+        config["generation_options"]["intent_plan_enabled"] = False
+        plugin = main.ImageGenPlugin(FakeContext(), config)
+        event = FakeEvent()
+        plugin._legacy_runner.text_to_image = AsyncMock(
+            return_value={"data": [{"url": "https://cdn.invalid/meme.png"}]}
+        )
+        original_postprocess = plugin._postprocess_meme_result
+        postprocess = AsyncMock(side_effect=lambda result: result)
+        plugin._postprocess_meme_result = postprocess
+
+        try:
+            results = await collect_async_generator(
+                plugin.preset_meme(event, "一组猫咪表情")
+            )
+        finally:
+            plugin._postprocess_meme_result = original_postprocess
+
+        postprocess.assert_awaited_once()
+        assert results[-1].kind == "image"
+
+    asyncio.run(scenario())
+
+
+def test_explicit_preset_command_cannot_switch_to_video():
+    async def scenario():
+        config = plugin_config()
+        config["jobs"] = {"enabled": False}
+        config["compatibility"] = {"mode": "router"}
+        config["generation_options"]["intent_plan_enabled"] = False
+        plugin = main.ImageGenPlugin(FakeContext(), config)
+        event = FakeEvent()
+        generate = AsyncMock(
+            return_value=GenerationResult(
+                provider_id="image",
+                media=[MediaArtifact("image", "https://cdn.invalid/wallpaper.png")],
+            )
+        )
+        plugin._generation_service.generate = generate
+
+        await collect_async_generator(
+            plugin.preset_wallpaper(event, "让城市灯光动起来，形成动态视频")
+        )
+
+        assert generate.await_args.args[0].capability == Capability.TEXT_TO_IMAGE
+
+    asyncio.run(scenario())
+
+
+def test_reference_preset_does_not_use_cache_without_explicit_reference():
+    async def scenario():
+        config = plugin_config()
+        config["jobs"] = {"enabled": False}
+        config["compatibility"] = {"mode": "router"}
+        config["generation_options"]["intent_plan_enabled"] = False
+        plugin = main.ImageGenPlugin(FakeContext(), config)
+        event = FakeEvent()
+        plugin._remember_last_image(event, image_data_uri(b"cached"), "cached.png")
+        generate = AsyncMock(
+            return_value=GenerationResult(
+                provider_id="image",
+                media=[MediaArtifact("image", "https://cdn.invalid/meme.png")],
+            )
+        )
+        plugin._generation_service.generate = generate
+
+        await collect_async_generator(plugin.preset_meme(event, "一只生气的小猫"))
+
+        request = generate.await_args.args[0]
+        assert request.capability == Capability.TEXT_TO_IMAGE
+        assert request.references == []
+
+    asyncio.run(scenario())
+
+
+def test_empty_reference_preset_can_use_last_image_once():
+    async def scenario():
+        config = plugin_config()
+        config["jobs"] = {"enabled": False}
+        config["compatibility"] = {"mode": "router"}
+        config["generation_options"]["intent_plan_enabled"] = False
+        plugin = main.ImageGenPlugin(FakeContext(), config)
+        event = FakeEvent()
+        plugin._remember_last_image(event, image_data_uri(b"cached"), "cached.png")
+        generate = AsyncMock(
+            return_value=GenerationResult(
+                provider_id="image",
+                media=[MediaArtifact("image", "https://cdn.invalid/figurine.png")],
+            )
+        )
+        plugin._generation_service.generate = generate
+
+        await collect_async_generator(plugin.preset_figurine(event, ""))
+
+        request = generate.await_args.args[0]
+        assert request.capability == Capability.IMAGE_TO_IMAGE
+        assert [reference.data for reference in request.references] == [b"cached"]
+        preset_text = main.get_preset("手办化").prompt_suffix
+        assert request.prompt.count(preset_text) == 1
+
+    asyncio.run(scenario())
+
+
+def test_style_preset_uses_image_edit_plan_to_select_references():
+    async def scenario():
+        config = plugin_config()
+        config["jobs"] = {"enabled": False}
+        config["compatibility"] = {"mode": "router"}
+        config["generation_options"]["intent_plan_enabled"] = False
+        config["generation_options"]["image_edit_plan_enabled"] = True
+        config["adapter_prompt_chat"] = {
+            "base_url": "https://chat.invalid",
+            "model": "vision",
+        }
+        plugin = main.ImageGenPlugin(FakeContext(), config)
+        event = FakeEvent(
+            [
+                Comp.Image(file=image_data_uri(b"first")),
+                Comp.Image(file=image_data_uri(b"second")),
+            ]
+        )
+        generate = AsyncMock(
+            return_value=GenerationResult(
+                provider_id="image",
+                media=[MediaArtifact("image", "https://cdn.invalid/style.png")],
+            )
+        )
+        plugin._generation_service.generate = generate
+        chat = AsyncMock(
+            return_value={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "requires_current_images": True,
+                                    "required_image_count": 1,
+                                    "should_plan": True,
+                                    "allow_cached_single_image": False,
+                                    "prompt": "只将第二张图转换为水彩风格",
+                                    "primary_image_index": 2,
+                                    "reference_image_indexes": [],
+                                    "output_image_count": None,
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+        with patch.object(main.adapters, "openai_chat", chat):
+            await collect_async_generator(
+                plugin.preset_style(event, "只使用第二张图转换为水彩风格")
+            )
+
+        request = generate.await_args.args[0]
+        assert [reference.data for reference in request.references] == [b"second"]
+
+    asyncio.run(scenario())
+
+
+def test_preset_access_denial_stops_event():
+    async def scenario():
+        config = plugin_config()
+        config["access_control"] = {"user_whitelist": "allowed"}
+        plugin = main.ImageGenPlugin(FakeContext(), config)
+        event = FakeEvent(sender_id="blocked")
+
+        results = await collect_async_generator(plugin.preset_avatar(event, "头像"))
+
+        assert event.stopped is True
+        assert results[-1].kind == "plain"
+
+    asyncio.run(scenario())
+
+
+def test_preset_commands_have_descriptions():
+    methods = (
+        main.ImageGenPlugin.preset_avatar,
+        main.ImageGenPlugin.preset_poster,
+        main.ImageGenPlugin.preset_wallpaper,
+        main.ImageGenPlugin.preset_card,
+        main.ImageGenPlugin.preset_phone_wallpaper,
+        main.ImageGenPlugin.preset_figurine,
+        main.ImageGenPlugin.preset_meme,
+        main.ImageGenPlugin.preset_style,
+    )
+
+    assert all(method.__doc__ and method.__doc__.strip() for method in methods)
+
+
+def test_preset_prompts_do_not_force_fixed_aspect_ratios():
+    for preset_name in ("头像", "海报", "壁纸", "卡片", "手机壁纸"):
+        prompt = main.get_preset(preset_name).prompt_suffix
+        assert not re.search(r"\b\d+:\d+\b", prompt)
+
+
 def test_plain_text_generation_does_not_implicitly_reuse_cached_image():
     async def scenario():
         config = plugin_config()
         config["jobs"] = {"enabled": False}
+        config["compatibility"] = {"mode": "router"}
         config["generation_options"]["intent_plan_enabled"] = False
         plugin = main.ImageGenPlugin(FakeContext(), config)
         event = FakeEvent()

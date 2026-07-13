@@ -138,6 +138,7 @@ try:
         Capability,
         CleanupManager,
         GenerationRequest,
+        GenerationResult,
         GenerationService,
         JobManager,
         IntentPlanner,
@@ -160,6 +161,7 @@ except ImportError:
         Capability,
         CleanupManager,
         GenerationRequest,
+        GenerationResult,
         GenerationService,
         JobManager,
         IntentPlanner,
@@ -421,40 +423,48 @@ class ImageGenPlugin(Star):
     @image_group.command("头像")
     async def preset_avatar(self, event: AstrMessageEvent, prompt: str = ""):
         """按头像预设生成图片，输出尺寸沿用当前供应商配置。"""
-        for result in await self._run_natural_generation(event, prompt, preset="头像"):
+        for result in await self._run_natural_generation(
+            event, prompt, preset="头像", force_image=True
+        ):
             yield result
 
     @image_group.command("海报")
     async def preset_poster(self, event: AstrMessageEvent, prompt: str = ""):
         """按海报预设生成图片，输出尺寸沿用当前供应商配置。"""
-        for result in await self._run_natural_generation(event, prompt, preset="海报"):
+        for result in await self._run_natural_generation(
+            event, prompt, preset="海报", force_image=True
+        ):
             yield result
 
     @image_group.command("壁纸")
     async def preset_wallpaper(self, event: AstrMessageEvent, prompt: str = ""):
         """按桌面壁纸预设生成图片，输出尺寸沿用当前供应商配置。"""
-        for result in await self._run_natural_generation(event, prompt, preset="壁纸"):
+        for result in await self._run_natural_generation(
+            event, prompt, preset="壁纸", force_image=True
+        ):
             yield result
 
     @image_group.command("卡片")
     async def preset_card(self, event: AstrMessageEvent, prompt: str = ""):
         """按卡片设计预设生成图片，输出尺寸沿用当前供应商配置。"""
-        for result in await self._run_natural_generation(event, prompt, preset="卡片"):
+        for result in await self._run_natural_generation(
+            event, prompt, preset="卡片", force_image=True
+        ):
             yield result
 
     @image_group.command("手机壁纸")
     async def preset_phone_wallpaper(self, event: AstrMessageEvent, prompt: str = ""):
         """按手机壁纸预设生成图片，输出尺寸沿用当前供应商配置。"""
         for result in await self._run_natural_generation(
-            event, prompt, preset="手机壁纸"
+            event, prompt, preset="手机壁纸", force_image=True
         ):
             yield result
 
     @image_group.command("手办化", alias={"手办"})
     async def preset_figurine(self, event: AstrMessageEvent, prompt: str = ""):
-        """使用参考图生成手办化效果。"""
+        """生成手办化效果；附图或明确引用上一张时使用参考图。"""
         for result in await self._run_natural_generation(
-            event, prompt, preset="手办化"
+            event, prompt, preset="手办化", force_image=True
         ):
             yield result
 
@@ -462,15 +472,15 @@ class ImageGenPlugin(Star):
     async def preset_meme(self, event: AstrMessageEvent, prompt: str = ""):
         """生成并自动切分表情包或贴纸图片。"""
         for result in await self._run_natural_generation(
-            event, prompt, preset="表情包"
+            event, prompt, preset="表情包", force_image=True
         ):
             yield result
 
     @image_group.command("风格转换", alias={"转风格"})
     async def preset_style(self, event: AstrMessageEvent, prompt: str = ""):
-        """使用参考图转换视觉风格并保留主体构图。"""
+        """转换视觉风格；附图或明确引用上一张时保留主体构图。"""
         for result in await self._run_natural_generation(
-            event, prompt, preset="风格转换"
+            event, prompt, preset="风格转换", force_image=True
         ):
             yield result
 
@@ -579,9 +589,11 @@ class ImageGenPlugin(Star):
         *,
         mode: str = "auto",
         preset: str = "",
+        force_image: bool = False,
     ) -> list:
         denied = self._access_denied_result(event)
         if denied is not None:
+            event.stop_event()
             return [denied]
         if preset:
             prompt = self._prompt_from_event_or_arg(
@@ -601,12 +613,13 @@ class ImageGenPlugin(Star):
         prompt = (prompt or "").strip()
         original_prompt = prompt
         cache_markers = ("上一张", "刚才那张", "上张图", "前一张", "之前的图")
+        reference_presets = {"手办化", "手办", "表情包", "贴纸", "风格转换", "转风格"}
         normalized_mode = (mode or "auto").strip().lower()
         allow_cached = (
             any(marker in prompt for marker in cache_markers)
             or normalized_mode
             in {"image_to_image", "i2i", "图生图", "image_to_video", "i2v", "图生视频"}
-            or preset in {"手办化", "手办", "表情包", "贴纸", "风格转换", "转风格"}
+            or (preset in reference_presets and not prompt)
         )
         image_items = await self._get_resolved_image_items(
             event,
@@ -657,6 +670,16 @@ class ImageGenPlugin(Star):
             plan.should_optimize = False
 
         selected_preset = get_preset(preset) or get_preset(plan.preset)
+        if force_image:
+            plan.capability = (
+                Capability.IMAGE_TO_IMAGE
+                if assets
+                and (
+                    plan.capability == Capability.IMAGE_TO_IMAGE
+                    or (selected_preset and selected_preset.reference_preferred)
+                )
+                else Capability.TEXT_TO_IMAGE
+            )
         if selected_preset and selected_preset.reference_preferred and assets:
             if plan.capability == Capability.TEXT_TO_IMAGE:
                 plan.capability = Capability.IMAGE_TO_IMAGE
@@ -665,14 +688,36 @@ class ImageGenPlugin(Star):
                 event.plain_result("❌ 该生成需求需要参考图片，但没有找到可用图片。")
             ]
         generation_prompt = plan.prompt
-        if selected_preset:
-            generation_prompt = selected_preset.apply(generation_prompt)
-        if not generation_prompt:
+        if not generation_prompt and not selected_preset:
             return [event.plain_result("❌ 请提供生成或编辑需求。")]
 
         notice = None
         output_count = plan.count if plan.count_explicit else None
-        if plan.capability.media_kind == "image":
+        if plan.capability == Capability.IMAGE_TO_IMAGE and image_items:
+            image_intent = await self._plan_image_edit_once(
+                generation_prompt, image_items
+            )
+            image_ref_error = self._image_intent_error(image_intent, len(image_items))
+            if image_ref_error:
+                return [event.plain_result(image_ref_error)]
+            planned_count = self._to_positive_int(
+                image_intent.get("output_image_count")
+            )
+            if planned_count:
+                output_count = planned_count
+            (
+                generation_prompt,
+                notice,
+                image_items,
+            ) = await self._prepare_planned_image_edit(
+                generation_prompt, image_items, image_intent
+            )
+            if selected_preset:
+                generation_prompt = selected_preset.apply(generation_prompt)
+            assets = [item["asset"] for item in image_items if item.get("asset")]
+        elif plan.capability.media_kind == "image":
+            if selected_preset:
+                generation_prompt = selected_preset.apply(generation_prompt)
             (
                 generation_prompt,
                 notice,
@@ -686,6 +731,8 @@ class ImageGenPlugin(Star):
             if detected_count:
                 output_count = detected_count
         else:
+            if selected_preset:
+                generation_prompt = selected_preset.apply(generation_prompt)
             generation_prompt, notice = await self._prepare_prompt(
                 generation_prompt,
                 plan.capability.value,
@@ -697,7 +744,7 @@ class ImageGenPlugin(Star):
             Capability.TEXT_TO_VIDEO: "文生视频",
             Capability.IMAGE_TO_VIDEO: "图生视频",
         }
-        result = await self._do_routed_generation(
+        result = await self._do_natural_generation(
             event,
             plan.capability,
             generation_prompt,
@@ -711,6 +758,37 @@ class ImageGenPlugin(Star):
             ),
         )
         return ([event.plain_result(notice)] if notice else []) + [result]
+
+    async def _do_natural_generation(
+        self,
+        event,
+        capability,
+        prompt,
+        task_name,
+        *,
+        output_count=None,
+        references=None,
+        postprocess=None,
+    ):
+        if self._router_enabled:
+            return await self._do_routed_generation(
+                event,
+                capability,
+                prompt,
+                task_name,
+                output_count=output_count,
+                references=references,
+                postprocess=postprocess,
+            )
+        return await self._do_legacy_natural_generation(
+            event,
+            capability,
+            prompt,
+            task_name,
+            output_count=output_count,
+            references=references,
+            postprocess=postprocess,
+        )
 
     @property
     def _router_enabled(self) -> bool:
@@ -2412,6 +2490,87 @@ class ImageGenPlugin(Star):
             size=size,
             caller=caller,
         )
+
+    async def _do_legacy_natural_generation(
+        self,
+        event,
+        capability: Capability,
+        prompt: str,
+        task_name: str,
+        *,
+        output_count=None,
+        references: list[ReferenceAsset] = None,
+        postprocess=None,
+    ):
+        references = list(references or [])
+        image_bytes = [reference.data for reference in references if reference.data]
+        image_names = [reference.filename for reference in references if reference.data]
+        self._cleanup_manager.start(self._active_media_paths)
+
+        async def operation():
+            try:
+                if capability == Capability.TEXT_TO_IMAGE:
+                    response = await self._legacy_runner.text_to_image(
+                        prompt, output_count
+                    )
+                elif capability == Capability.IMAGE_TO_IMAGE:
+                    response = await self._legacy_runner.image_to_image(
+                        prompt,
+                        image_bytes,
+                        image_names,
+                        self._cfg_value(
+                            "image_to_image_strategy",
+                            "image_edits",
+                            "generation_options",
+                        ),
+                        output_count,
+                    )
+                elif capability == Capability.TEXT_TO_VIDEO:
+                    response = await self._legacy_runner.text_to_video(
+                        prompt,
+                        self._cfg_value(
+                            "video_via_strategy",
+                            "openai_video",
+                            "generation_options",
+                        ),
+                    )
+                else:
+                    response = await self._legacy_runner.image_to_video(
+                        prompt,
+                        image_bytes[0],
+                        image_names[0],
+                        self._cfg_value(
+                            "image_to_video_strategy",
+                            "openai_video",
+                            "generation_options",
+                        ),
+                    )
+            except adapters.ApiException as exc:
+                return event.plain_result(f"❌ {exc}")
+
+            generated = GenerationResult(
+                provider_id="legacy",
+                media=[
+                    MediaArtifact(kind=kind, value=value, provider_id="legacy")
+                    for kind, value in extract_all_media(response)
+                ],
+                raw=response,
+            )
+            if postprocess is not None:
+                processed = postprocess(generated)
+                generated = (
+                    await processed if inspect.isawaitable(processed) else processed
+                )
+            for warning in generated.warnings:
+                logger.warning(f"{task_name}: {warning}")
+            return await self._send_result(
+                event,
+                generated.as_response(),
+                task_name,
+                expect=capability.media_kind,
+            )
+
+        return await self._run_legacy_with_policy(event, capability, operation)
 
     async def _do_routed_generation(
         self,

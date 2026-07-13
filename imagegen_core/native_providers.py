@@ -262,10 +262,16 @@ class GenericJsonProvider(OpenAICompatibleProvider):
 
     @staticmethod
     def _payload(request: GenerationRequest, cfg: dict) -> dict:
+        count = request.count
+        if not request.count_explicit:
+            try:
+                count = max(1, min(10, int(cfg.get("n", request.count) or 1)))
+            except (TypeError, ValueError):
+                count = request.count
         payload = {
             "model": cfg.get("model", ""),
             "prompt": request.prompt,
-            "n": request.count,
+            "n": count,
         }
         if request.size or cfg.get("size"):
             payload["size"] = request.size or cfg.get("size")

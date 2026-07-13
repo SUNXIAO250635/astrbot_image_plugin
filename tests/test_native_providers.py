@@ -139,6 +139,30 @@ def test_openai_provider_respects_configured_and_explicit_image_counts(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    ("configured_count", "request_count", "count_explicit", "expected_count"),
+    [
+        (3, 1, False, 3),
+        (4, 2, True, 2),
+    ],
+)
+def test_generic_json_provider_respects_configured_and_explicit_counts(
+    configured_count, request_count, count_explicit, expected_count
+):
+    request = GenerationRequest(
+        Capability.TEXT_TO_IMAGE,
+        "cat",
+        count=request_count,
+        count_explicit=count_explicit,
+    )
+
+    payload = GenericJsonProvider._payload(
+        request, {"model": "test", "n": configured_count}
+    )
+
+    assert payload["n"] == expected_count
+
+
 def test_gemini_native_codec_sends_inline_reference_and_parses_image():
     async def scenario():
         encoded = base64.b64encode(b"generated").decode()
