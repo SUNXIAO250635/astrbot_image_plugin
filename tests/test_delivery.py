@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import astrbot.api.message_components as Comp
 
@@ -71,3 +72,41 @@ def test_partial_media_is_preserved_when_backfill_request_fails():
         ]
 
     asyncio.run(scenario())
+
+
+def test_local_media_must_stay_inside_plugin_managed_directory(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.chdir(tmp_path)
+        config = plugin_config()
+        config["media"]["save_dir"] = "managed"
+        plugin = main.ImageGenPlugin(FakeContext(), config)
+        outside = tmp_path / "outside.png"
+        outside.write_bytes(b"outside")
+        managed = Path(plugin._save_dir)
+        managed.mkdir(parents=True, exist_ok=True)
+        inside = managed / "inside.png"
+        inside.write_bytes(b"inside")
+
+        rejected = await plugin._send_result(
+            FakeEvent(), {"data": [{"url": str(outside)}]}, "image"
+        )
+        accepted = await plugin._send_result(
+            FakeEvent(), {"data": [{"url": str(inside)}]}, "image"
+        )
+
+        assert rejected.kind == "plain"
+        assert "受管目录外" in rejected.value
+        assert accepted.kind == "image"
+        assert Path(accepted.value) == inside
+
+    asyncio.run(scenario())
+
+
+def test_save_dir_cannot_escape_data_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config = plugin_config()
+    config["media"]["save_dir"] = "../outside"
+
+    plugin = main.ImageGenPlugin(FakeContext(), config)
+
+    assert Path(plugin._save_dir) == (tmp_path / "data" / "imagegen").resolve()

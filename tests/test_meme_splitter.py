@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw
 
 import main
 from imagegen_core.meme import SmartMemeSplitter
-from imagegen_core.models import GenerationResult, MediaArtifact
+from imagegen_core.models import CallerContext, GenerationResult, MediaArtifact
 from media import extract_all_media
 from tests.fakes.runtime import FakeContext, plugin_config
 
@@ -152,8 +152,11 @@ def test_generation_response_parser_accepts_existing_local_paths(tmp_path):
     ]
 
 
-def test_meme_postprocessor_replaces_source_with_local_slices(tmp_path):
-    source = _sticker_sheet(tmp_path / "plugin_sheet.png")
+def test_meme_postprocessor_replaces_source_with_local_slices(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    managed_dir = tmp_path / "data" / "plugin_data"
+    managed_dir.mkdir(parents=True)
+    source = _sticker_sheet(managed_dir / "plugin_sheet.png")
     config = plugin_config()
     config["meme_splitter"] = {
         "enabled": True,
@@ -164,7 +167,7 @@ def test_meme_postprocessor_replaces_source_with_local_slices(tmp_path):
         "connect_radius": 5,
         "padding": 4,
     }
-    config["media"]["save_dir"] = str(tmp_path / "plugin_data")
+    config["media"]["save_dir"] = "plugin_data"
     plugin = main.ImageGenPlugin(FakeContext(), config)
     plugin._meme_splitter = SmartMemeSplitter(config["meme_splitter"])
     result = GenerationResult(
@@ -178,3 +181,49 @@ def test_meme_postprocessor_replaces_source_with_local_slices(tmp_path):
     assert all(item.temporary for item in processed.media)
     assert all(Path(item.value).exists() for item in processed.media)
     assert any("adaptive_outline" in warning for warning in processed.warnings)
+
+
+def test_restored_background_meme_job_runs_postprocessor(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.chdir(tmp_path)
+        managed_dir = tmp_path / "data" / "restored_data"
+        managed_dir.mkdir(parents=True)
+        source = _sticker_sheet(managed_dir / "restored_sheet.png")
+        config = plugin_config()
+        config["media"]["save_dir"] = "restored_data"
+        config["meme_splitter"] = {
+            "enabled": True,
+            "adaptive_enabled": True,
+            "vision_enabled": False,
+            "minimum_slices": 2,
+            "expected_slices": 2,
+            "connect_radius": 5,
+            "padding": 4,
+        }
+        context = FakeContext()
+        plugin = main.ImageGenPlugin(context, config)
+        result = GenerationResult(
+            provider_id="test",
+            media=[MediaArtifact("image", str(source), provider_id="test")],
+        )
+        caller = CallerContext(
+            unified_msg_origin="test:private:user-1",
+            sender_id="user-1",
+        )
+
+        await plugin._background_job_completed(
+            "job-restored",
+            result,
+            None,
+            {
+                "task_name": "meme",
+                "caller": caller.to_dict(),
+                "handle": {"remote_task_id": "remote-1"},
+                "postprocess": "meme",
+            },
+        )
+
+        assert len(context.sent) == 2
+        assert all(len(chain) == 1 for _, chain in context.sent)
+
+    asyncio.run(scenario())

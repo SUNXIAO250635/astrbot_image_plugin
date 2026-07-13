@@ -1,182 +1,133 @@
-# AstrBot 生图插件开发文档
+# AstrBot 多模态生图视频插件开发文档
 
-> 插件名：`astrbot_plugin_imagegen`
-> 目标：在 AstrBot 中通过指令调用多种图像/视频生成接口。
+插件名：`astrbot_plugin_imagegen`
 
----
+目标：在 AstrBot v4 中提供可配置、可恢复、可故障转移的图片和视频生成能力，同时保留 OpenAI 兼容接口的直接适配模式。
 
-## 1. AstrBot 插件开发要点（v4 新版 API）
+## 1. 运行要求
 
-AstrBot 在 v4 之后使用基于 `Star` 类的装饰器风格 API，旧的 `run()/info()` 写法已废弃。
+- AstrBot `>=4.10.4`
+- Python 3.10+
+- `aiohttp>=3.9.0`
+- `Pillow>=10.0.0`
 
-### 1.1 插件目录结构（必须是 git 仓库）
-```
+所有网络请求均为异步调用。运行时媒体只允许写入 `data/<media.save_dir>/`，`media.save_dir` 必须是 `data/` 下的相对子目录。
+
+## 2. 文件结构
+
+```text
 astrbot_plugin_imagegen/
-├── main.py              # 插件主类所在文件，文件名必须叫 main.py
-├── metadata.yaml        # 插件市场展示的元信息
-├── _conf_schema.json    # 配置可视化 Schema（WebUI 上自动渲染）
-├── requirements.txt     # pip 依赖
-└── README.md            # 指令帮助
+|- main.py                         # AstrBot 命令、LLM Tool、兼容路径和发送边界
+|- adapters.py                     # OpenAI 风格 HTTP 请求与视频提交/轮询
+|- media.py                        # 媒体响应解析、下载和本地文件落盘
+|- imagegen_core/
+|  |- models.py                    # 统一请求、结果、媒体、引用和远端任务模型
+|  |- config.py                    # providers/routing/legacy 配置归一化
+|  |- provider.py                  # MediaProvider 协议
+|  |- providers.py                 # OpenAI-compatible Provider
+|  |- native_providers.py          # Gemini、Generic JSON、MiniMax 等原生 codec
+|  |- router.py                    # 顺序、优先级、轮询、冷却和故障转移
+|  |- service.py                   # 统一 GenerationService
+|  |- references.py                # 当前消息、回复、转发、群文件和头像解析
+|  |- intent.py                    # 自然语言能力/预设/数量规划
+|  |- presets.py                   # 头像、海报、壁纸、手办、表情包等预设
+|  |- jobs.py                      # 前台短等待、后台发送和远端任务恢复
+|  |- policy.py                    # KV 持久化限流和并发租约
+|  |- cleanup.py                   # 受管目录临时文件清理
+|  |- meme.py                      # SmartMemeSplitter
+|  `- delivery.py                  # Provider 响应转统一结果
+|- _conf_schema.json               # AstrBot WebUI 配置
+|- metadata.yaml
+|- requirements.txt
+|- README.md
+`- tests/                          # AstrBot stub 与离线回归测试
 ```
 
-### 1.2 最小实例
-```python
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
-from astrbot.api.star import Context, Star, register
-from astrbot.api import logger
+## 3. 核心模型
 
-class MyPlugin(Star):
-    def __init__(self, context: Context):
-        super().__init__(context)
+四种能力统一使用 `Capability`：
 
-    @filter.command("helloworld")
-    async def helloworld(self, event: AstrMessageEvent):
-        '''这是 hello world 指令'''  # docstring 会被解析为指令描述
-        yield event.plain_result(f"Hello, {event.get_sender_name()}!")
+- `text_to_image`
+- `image_to_image`
+- `text_to_video`
+- `image_to_video`
 
-    async def terminate(self):
-        pass
-```
+`GenerationRequest` 保存提示词、参考图、数量、尺寸、调用者和供应商选项。`GenerationResult` 保存多个 `MediaArtifact`、供应商尝试记录、远端任务 ID 和警告。异步视频提交后用 `GenerationHandle` 持久化 provider、task ID 和轮询元数据。
 
-### 1.3 关键 API
-| 用途 | API |
-|---|---|
-| 注册指令 | `@filter.command("name", alias={"别名1"})` |
-| 注册指令组 | `@filter.command_group("g")` → `@g.command("sub")` |
-| 带参指令 | 在 handler 上声明 `a: int, b: int`，AstrBot 自动解析 |
-| 管理员指令 | `@filter.permission_type(filter.PermissionType.ADMIN)` |
-| 发送纯文本 | `yield event.plain_result("...")` |
-| 发送图片(本地/URL) | `yield event.image_result("path 或 https URL")` |
-| 发送富媒体消息链 | `yield event.chain_result([Comp.Plain("..."), Comp.Image.fromURL(url)])` |
-| 主动消息 | `await self.context.send_message(umo, MessageChain().message("..").file_image(p))` |
-| 获取发送者 ID | `event.get_sender_id()` |
-| 获取会话标识 | `event.unified_msg_origin` |
-| 插件配置 | `__init__(self, context, config: AstrBotConfig)` 自动注入 |
-| 日志 | `from astrbot.api import logger` |
+## 4. 请求流程
 
-### 1.4 消息链与媒体
-- `event.message_obj.message` 是入站消息链 `List[BaseMessageComponent]`，里面可能是 `Comp.Image`、`Comp.Plain` 等。
-- 图片组件可拿到 `file` 或 `url`：
-  - `Comp.Image.fromURL(url=...)` / `Comp.Image.fromFileSystem(path=...)`
-  - 入站的 `Comp.Image` 通常带 `.file`（可能是 URL、base64://、file://或本地路径），用 `.url` 等属性可能存在，注意取值前判断。
-- 视频：`Comp.Video.fromURL(url=...)` / `Comp.Video.fromFileSystem(path=...)`。
+### 4.1 命令和 LLM Tool
 
-### 1.5 持久化要求（官方强制规则）
-1. 持久化数据存到 `data/` 目录下，**不要**存插件自身目录，防止更新覆盖。
-2. 网络请求用异步库 `aiohttp` / `httpx`，**不要**用 `requests`。
-3. 良好错误处理，不要让插件因一个异常崩溃。
-4. 提交前用 `ruff` 格式化代码。
+1. 检查用户/群黑白名单。
+2. 解析当前消息、显式回复、合并转发、群文件和头像引用。
+3. Chat 意图规划判断图片/视频、文生/图生、预设和结果数量；失败时使用本地规则。
+4. 对图片提示词先判断是否需要优化，仅在需要时执行第二次 Chat 改写。
+5. 创建 `GenerationRequest` 并申请持久化额度/并发租约。
+6. Router 选择供应商并执行；短等待超时后转入后台。
+7. 统一发送媒体，多结果默认逐条发送。
 
----
+### 4.2 图生图引用规则
 
-## 2. 本插件设计
+- 单图编辑可显式使用“上一张/刚才那张”缓存。
+- 多图和编号引用只使用当前请求明确附带或引用的来源。
+- 缓存键包含会话和用户，群聊中不会跨用户复用。
+- 单图与总字节数分别受 `image_reference` 配置限制。
 
-### 2.1 外部接口（四类，按 OpenAI 兼容风格适配）
-| 模式 | 调用路径 | 返回 | 用途 |
-|---|---|---|---|
-| 文生图 image-generation | `POST {base}/v1/images/generations` | `data[0].url` 或 base64 | 文字→图片 |
-| 图生图/图编辑 image-edits | `POST {base}/images/edits`（multipart） | `data[0].url` | 图片+文字→图片 |
-| 文生视频(走 chat) openai | `POST {base}/v1/chat/completions` | 文本中含图片/视频 URL，或 `choices` 内媒体 | 文字→视频/图片(走对话模型) |
-| 文生视频 openai-video | `POST {base}/v1/video/generations` | `data[0].url`(视频) | 文字→视频 |
+### 4.3 后台任务
 
-> "openai (/v1/chat/completions)" 适配用于会话式多模态模型：发提示词，在回复文本里解析出媒体 URL（图片或视频），常见于某些聚合中转。我们把 `text-to-video` 走这里，并把 `image-to-video` 也优先走 openai-video 接口或 image-edits 接口取视频。
+`JobManager` 使用 `asyncio.shield` 保留超过前台等待时间的任务。远端视频返回 task ID 后立即写入 AstrBot 插件 KV；插件重载只恢复轮询，不重复提交。任务完成后通过 UMO 主动发送，每个媒体单独发送，降低 OneBot WebSocket 超时概率。
 
-### 2.2 指令设计
-插件以一个指令组 `画` 组织：
+## 5. Provider 与路由
 
-```
-/画 help                          -- 帮助
-/画 文 <prompt>                    -- 文生图（走 image-generation）
-/画 图 <prompt>                    -- 图生图（需要回复/附带一张图片，走 image-edits）
-/画 视频 <prompt>                  -- 文生视频（走 openai-video 或 openai chat）
-/画 图生视频 <prompt>              -- 需要附带一张图片，图生视频
-/画 设置 <adapter> <base> <key> <model>  --（管理员）运行时改适配器，非必需
-```
+`providers` 是 WebUI `template_list`。每个实例至少包含：
 
-附带图片的识别策略：handler 内扫描 `event.message_obj.message` 中的 `Comp.Image`；若当前消息里没有，尝试读取上一条消息（通过 `event` 不易获得历史，简化为：要求用户在同一条消息里带图。未来可扩展）。
+- `provider_id`
+- `provider_type`
+- `base_url`
+- `api_key`
+- `model`
+- `capabilities`
+- `priority`
 
-### 2.3 配置项（`_conf_schema.json`）
-为每个适配器独立配置 `base_url` / `api_key` / `model` / `extra`，外加全局开关。
+支持协议：
 
-```
-adapter_image_generation: { base_url, api_key, model, size, n }
-adapter_image_edits:       { base_url, api_key, model, mask },
-adapter_openai_chat:       { base_url, api_key, model, system_prompt, parse_media }
-adapter_openai_video:      { base_url, api_key, model, seconds }
-media_download: { enabled, proxy, save_dir }
-```
+- `openai_compat`：OpenAI Images、OpenAI Chat、OpenAI Video 及兼容中转
+- `gemini`：Google `generateContent` 图片输出和内联参考图
+- `generic_json`：可配置提交、轮询和文件结果路径
 
-### 2.4 媒体落盘与发送流程
-1. 接口返回图片/视频 URL（或 base64）。
-2. 用 `aiohttp` 下载到 `data/imagegen/<session>/<ts>.ext`。
-3. `yield event.image_result(path)` 或 `yield event.chain_result([Comp.Video.fromFileSystem(path)])`。
-4. 失败：`yield event.plain_result("❌ ...")` 并 `event.stop_event()`。
+内置类型覆盖 OpenAI Images、Google Gemini、Agnes AI、xAI、MiniMax、阶跃星辰、Zai、grok2api、豆包和 SenseNova。类型表示默认 codec 和路径，不保证任意模型自动拥有所有能力；实际能力由 `capabilities` 声明。
 
-### 2.5 文件结构
-```
-astrbot_plugin_imagegen/
-├── main.py
-├── adapters.py        # 四个适配器实现
-├── media.py           # 下载、解析 URL/base64、保存到 data
-├── _conf_schema.json
-├── metadata.yaml
-├── requirements.txt
-└── README.md
-```
+Router 支持显式 provider 顺序、`type:<provider_type>` 占位、同类型优先级、round-robin、失败阈值、冷却时间和最大尝试数。网络错误、限流、服务端错误与媒体解析错误可切换后备供应商。远端任务已被接受后，除非明确开启终态失败切换，否则不会创建重复任务。
 
----
+`compatibility.mode=legacy` 保留四个旧适配器的直接调用路径。默认使用 `router`；`providers` 留空时 Router 会从旧配置生成 legacy profiles。
 
-## 3. 接口适配细节
+## 6. SmartMemeSplitter
 
-### 3.1 image-generation `/v1/images/generations`
-请求体（JSON）：
-```json
-{ "model": "...", "prompt": "...", "n": 1, "size": "1024x1024" }
-```
-Header: `Authorization: Bearer <key>`。
-响应：`{ "data": [ { "url": "https..." } ] }` 或 `[{ "b64_json": "..." }]`。
+表情包预设生成后依次尝试：
 
-### 3.2 image-edits `/v1/images/edits`
-multipart/form-data：
-- `image`: 输入图文件
-- `prompt`: 编辑指令
-- `model`, `n`, `size`, `mask`(可选)
-响应同上。是否输出视频取决于提供方；若返回 url 后缀为 `.mp4` 判定为视频。
+1. 背景颜色与黑描边连通区域自适应切分。
+2. 手动 `grid_rows x grid_columns` 网格。
+3. 使用提示词 Chat 配置的视觉模型返回 boxes。
+4. 全部失败时保留原图。
 
-### 3.3 openai `/v1/chat/completions`（用于文生视频/多模态对话）
-请求体：
-```json
-{ "model": "...", "messages": [ {"role":"system","content":"..."}, {"role":"user","content":"<prompt>"} ] }
-```
-响应解析：取 `choices[0].message.content`，用正则提取其中的 http(s) 图片/视频 URL（按扩展名区分 `png|jpg|jpeg|webp` → 图片，`mp4|mov|webm` → 视频）。部分中转会把 URL 包在 markdown `![](...)` 或裸 URL 中，都需兼容。
+自适应结果可输出透明 PNG，并通过最少数量、期望数量、最小面积、最小尺寸和重叠率做质量检查。切片及源文件必须位于插件受管媒体目录；重启恢复的异步表情包任务也会执行后处理。
 
-### 3.4 openai-video `/v1/video/generations`
-请求体（各家略有差异，做兜底）：
-```json
-{ "model": "...", "prompt": "...", "seconds": 8 }
-```
-响应：`{ "data": [ { "url": "https://.../*.mp4" } ] }` 或 `{ "video_url" / "url" }`。统一在一个 `extract_media_from_json()` 里兜多种字段。
+## 7. 策略与存储
 
-### 3.5 兜底与统一
-`media.py::extract_media(resp_json)` 统一从上述四种响应里抠出 `(kind, value)`，`kind ∈ {image, video}`，`value` 为 URL 或 `data:image/...;base64,...`。下游只关心 kind+value。
+- 黑名单优先于白名单；白名单为空表示不限制。
+- 周期额度和并发租约存入插件 KV，限制值为 `0` 表示关闭。
+- 上一张图片索引存入插件 KV，并按 TTL 和最大内存条目数清理。
+- 清理器只遍历 `data/<media.save_dir>/`，跳过活动缓存文件和未过期文件。
+- 本地生成结果发送前再次校验路径，拒绝发送受管目录外文件。
+- API Key 不写日志、不写任务恢复元数据、不写测试夹具。
 
-## 4. 错误处理与超时
-- 每个请求 `aiohttp.ClientTimeout(total=180)`（视频生成可能较慢）。
-- HTTP 非 2xx：记录 body 前 500 字，回 `❌ 接口返回 <code>`。
-- 解析不到媒体：回 `❌ 响应中未找到图片/视频`。
-- 网络异常 `aiohttp.ClientError`：回 `❌ 网络错误: <e>`。
-
-## 5. 依赖
-- `aiohttp`（异步 HTTP，符合 AstrBot 规范）
-
-## 6. 回归测试
-
-测试使用最小 AstrBot stub，不需要安装完整 AstrBot，也不会请求真实供应商：
+## 8. 验证
 
 ```powershell
 python -m pytest -q
+ruff check main.py adapters.py media.py imagegen_core tests
+python -m compileall -q main.py adapters.py media.py imagegen_core tests
+git diff --check
 ```
 
-当前回归范围包括文生图、图生图、文生视频、图生视频、提示词数量解析、
-Seedream 水印、视频任务轮询、多媒体逐条发送、白名单和上一张图片缓存隔离。
-`pytest` 只用于开发和 CI，不加入插件运行时 `requirements.txt`。
+测试完全离线，使用最小 AstrBot stub，不请求真实供应商。覆盖命令流程、提示词语义与数量、Provider 路由、原生 codec、引用来源、后台任务恢复、限流、清理、媒体发送、Schema 配置合约和 SmartMemeSplitter 合成图片回归。

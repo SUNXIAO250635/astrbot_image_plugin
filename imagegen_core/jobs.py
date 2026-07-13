@@ -78,6 +78,16 @@ class JobManager:
                 name=f"watch-{job_id}",
             )
             return JobRun(job_id, True)
+        except asyncio.CancelledError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await self._delete_job(job_id)
+            self._tasks.pop(job_id, None)
+            raise
+        except Exception:
+            await self._delete_job(job_id)
+            self._tasks.pop(job_id, None)
+            raise
 
     async def restore(self, resume_operation, on_complete):
         async with self._lock:

@@ -62,7 +62,7 @@ AstrBot `>=4.10.4` 可使用新的 `providers` 列表添加多个供应商实例
 - `rate_limit.*` 用户/群周期额度、能力 cost 和并发任务租约（限制值 0 表示关闭）
 - `cleanup.*` 受管媒体目录的过期文件清理
 - `meme_splitter.*` 表情包自适应切分、视觉兜底、手动网格和透明背景参数
-- `media.save_dir` 保存目录（相对 `data/`）
+- `media.save_dir` 保存目录（必须是相对 `data/` 的子目录；绝对路径或 `..` 越界会回退为 `data/imagegen`）
 - `media.multi_media_send_mode` 多图/多视频发送方式，默认逐条发送
 
 > **图片尺寸**：`adapter_image_generation.size` / `adapter_image_edits.size` 为可手填文本框，支持任意尺寸（如 `1024x1024` / `2048x1152` / `4096x4096`，或 `16:9` 等比例）。最终能否真正输出该尺寸取决于上游渠道/模型支持，请按模型说明填写。

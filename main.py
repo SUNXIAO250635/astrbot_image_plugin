@@ -452,11 +452,18 @@ class ImageGenPlugin(Star):
     @property
     def _save_dir(self) -> str:
         media_cfg = self.config.get("media", {}) or {}
-        subdir = media_cfg.get("save_dir", "imagegen") or "imagegen"
-        # AstrBot 把 data 目录作为工作区根，相对路径基于运行目录
-        data_root = os.path.join("data", subdir)
-        os.makedirs(data_root, exist_ok=True)
-        return data_root
+        subdir = str(media_cfg.get("save_dir", "imagegen") or "imagegen").strip()
+        data_root = os.path.realpath("data")
+        candidate = os.path.realpath(os.path.join(data_root, subdir))
+        try:
+            inside_data = os.path.commonpath([candidate, data_root]) == data_root
+        except ValueError:
+            inside_data = False
+        if os.path.isabs(subdir) or not inside_data or candidate == data_root:
+            logger.warning("media.save_dir 必须是 data/ 下的相对子目录，已回退到 imagegen")
+            candidate = os.path.join(data_root, "imagegen")
+        os.makedirs(candidate, exist_ok=True)
+        return candidate
 
     @property
     def _timeout(self) -> int:
@@ -2203,7 +2210,6 @@ class ImageGenPlugin(Star):
         output_count=None,
         references: list[ReferenceAsset] = None,
         size: str = "",
-        postprocess=None,
     ) -> GenerationRequest:
         data_items = list(image_bytes) if isinstance(image_bytes, (list, tuple)) else []
         if image_bytes is not None and not isinstance(image_bytes, (list, tuple)):
@@ -2272,6 +2278,8 @@ class ImageGenPlugin(Star):
             "capability": capability.value,
             "caller": request.caller.to_dict(),
         }
+        if postprocess == self._postprocess_meme_result:
+            metadata["postprocess"] = "meme"
         self._cleanup_manager.start(self._active_media_paths)
         try:
             lease = await self._rate_limiter.acquire(
@@ -2306,6 +2314,9 @@ class ImageGenPlugin(Star):
             )
         except ProviderFailure as exc:
             return event.plain_result(f"❌ {exc}")
+        except Exception as exc:
+            logger.exception(f"{task_name}生成流程异常: {exc}")
+            return event.plain_result(f"❌ {task_name}失败，请查看 AstrBot 日志。")
         if job_run.background:
             return event.plain_result(
                 f"⏳ {task_name}任务已转到后台，任务 ID：{job_run.job_id}"
@@ -2339,6 +2350,12 @@ class ImageGenPlugin(Star):
                 logger.warning(f"后台任务 {job_id} 失败提示发送失败: {send_error}")
             return
 
+        if (
+            metadata.get("postprocess") == "meme"
+            and isinstance(metadata.get("handle"), dict)
+        ):
+            result = await self._postprocess_meme_result(result)
+
         components = []
         for index, artifact in enumerate(result.media, start=1):
             value = artifact.value
@@ -2349,6 +2366,11 @@ class ImageGenPlugin(Star):
                     else Comp.Image.fromURL(url=value)
                 )
             else:
+                if os.path.exists(str(value)) and not self._is_managed_local_media(
+                    str(value)
+                ):
+                    logger.warning(f"后台任务 {job_id} 拒绝发送受管目录外的本地媒体")
+                    continue
                 try:
                     kind, path = await download_to_file(
                         value,
@@ -2417,6 +2439,12 @@ class ImageGenPlugin(Star):
         for artifact in result.media:
             if artifact.kind != "image":
                 processed.append(artifact)
+                continue
+            if os.path.exists(str(artifact.value)) and not self._is_managed_local_media(
+                str(artifact.value)
+            ):
+                processed.append(artifact)
+                result.warnings.append("表情包本地源文件不在插件受管目录，已跳过切分。")
                 continue
             stem = f"meme_{int(time.time())}_{secrets.token_hex(3)}"
             try:
@@ -2505,8 +2533,19 @@ class ImageGenPlugin(Star):
             if item.get("value") and os.path.exists(str(item.get("value")))
         ]
 
+    def _is_managed_local_media(self, value: str) -> bool:
+        if not value or not os.path.isfile(value):
+            return False
+        path = os.path.realpath(value)
+        root = os.path.realpath(self._save_dir)
+        try:
+            return os.path.commonpath([path, root]) == root
+        except ValueError:
+            return False
+
     # ---- 文生图 ----
     async def _do_text_to_image(self, event, prompt, output_count=None):
+        self._cleanup_manager.start(self._active_media_paths)
         if self._router_enabled:
             return await self._do_routed_generation(
                 event,
@@ -2540,6 +2579,7 @@ class ImageGenPlugin(Star):
     async def _do_image_to_image(
         self, event, prompt, img_bytes, img_name, strategy, output_count=None
     ):
+        self._cleanup_manager.start(self._active_media_paths)
         if self._router_enabled:
             return await self._do_routed_generation(
                 event,
@@ -2599,6 +2639,7 @@ class ImageGenPlugin(Star):
 
     # ---- 文生视频 ----
     async def _do_text_to_video(self, event, prompt, strategy):
+        self._cleanup_manager.start(self._active_media_paths)
         if self._router_enabled:
             return await self._do_routed_generation(
                 event,
@@ -2625,6 +2666,7 @@ class ImageGenPlugin(Star):
 
     # ---- 图生视频 ----
     async def _do_image_to_video(self, event, prompt, img_bytes, img_name, strategy):
+        self._cleanup_manager.start(self._active_media_paths)
         if self._router_enabled:
             return await self._do_routed_generation(
                 event,
@@ -2707,6 +2749,9 @@ class ImageGenPlugin(Star):
             self._remember_last_image(event, value, "generated.png", source=task_name)
             return event.image_result(value)
 
+        if os.path.exists(str(value)) and not self._is_managed_local_media(str(value)):
+            return event.plain_result("❌ 拒绝发送插件受管目录外的本地媒体文件。")
+
         # 非 URL（base64 data URI / 本地路径）：落盘后用本地路径发送。
         # 单容器部署下 file:// 可被 NapCat 读到；双容器下若仍 ENOENT，
         # 说明该渠道没返回 URL（只给 base64），此时只能靠部署层共享卷解决。
@@ -2735,6 +2780,9 @@ class ImageGenPlugin(Star):
                 return Comp.Video.fromURL(url=value)
             self._remember_last_image(event, value, "generated.png", source=task_name)
             return Comp.Image.fromURL(url=value)
+
+        if os.path.exists(str(value)) and not self._is_managed_local_media(str(value)):
+            return "❌ 拒绝发送插件受管目录外的本地媒体文件。"
 
         try:
             kind2, path = await download_to_file(

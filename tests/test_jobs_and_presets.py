@@ -5,6 +5,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import astrbot.api.message_components as Comp
+import pytest
 
 import main
 from imagegen_core.jobs import JobManager
@@ -107,6 +108,32 @@ def test_job_manager_restores_persisted_remote_handle_once():
 
         assert resumed == [handle]
         assert owner.values["imagegen_jobs:job-restore"]["status"] == "delivered"
+
+    asyncio.run(scenario())
+
+
+def test_job_manager_cleans_failed_foreground_task_and_persisted_state():
+    async def scenario():
+        owner = KVOwner()
+        manager = JobManager(owner, foreground_wait_seconds=1)
+
+        async def operation(on_handle):
+            await on_handle(
+                GenerationHandle(
+                    provider_id="image",
+                    remote_task_id="task-failed",
+                    capability=Capability.TEXT_TO_IMAGE,
+                    accepted_at=1,
+                )
+            )
+            raise RuntimeError("generation failed")
+
+        with pytest.raises(RuntimeError, match="generation failed"):
+            await manager.run(operation, AsyncMock(), {"task_name": "image"})
+
+        assert manager._tasks == {}
+        assert owner.values.get(JobManager.INDEX_KEY) == []
+        assert not any(key.startswith("imagegen_jobs:job-") for key in owner.values)
 
     asyncio.run(scenario())
 

@@ -1,7 +1,7 @@
 name: astrbot_plugin_imagegen
 display_name: 多模态生图视频插件
 desc: 多供应商图片/视频生成，支持智能参考图、预设、LLM Tool、失败切换、前后台任务和表情包智能切分。
-version: v0.7.0
+version: v1.0.0
 author: sunx
 repo: https://github.com/SUNXIAO250635/astrbot_image_plugin
 astrbot_version: ">=4.10.4"
