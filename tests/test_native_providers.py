@@ -4,7 +4,9 @@ import asyncio
 import base64
 from unittest.mock import AsyncMock, patch
 
-from imagegen_core.config import ProviderProfile, parse_capabilities
+import pytest
+
+from imagegen_core.config import ProviderProfile, parse_capabilities, provider_profiles
 from imagegen_core.models import (
     Capability,
     GenerationRequest,
@@ -39,9 +41,7 @@ def test_provider_registry_covers_all_configured_supplier_types():
         "doubao",
     }
     for provider_type in openai_types:
-        provider = build_provider(
-            _profile(provider_type, {Capability.TEXT_TO_IMAGE})
-        )
+        provider = build_provider(_profile(provider_type, {Capability.TEXT_TO_IMAGE}))
         assert isinstance(provider, OpenAICompatibleProvider)
     assert isinstance(
         build_provider(_profile("google_gemini", {Capability.TEXT_TO_IMAGE})),
@@ -58,6 +58,85 @@ def test_provider_registry_covers_all_configured_supplier_types():
     assert parse_capabilities("", "google_gemini") == frozenset(
         {Capability.TEXT_TO_IMAGE, Capability.IMAGE_TO_IMAGE}
     )
+
+
+def test_duplicate_provider_ids_are_rejected():
+    with pytest.raises(ValueError, match="重复 provider_id"):
+        provider_profiles(
+            {
+                "providers": [
+                    {"provider_id": "same", "provider_type": "openai_compat"},
+                    {"provider_id": "same", "provider_type": "openai_images"},
+                ]
+            }
+        )
+
+
+def test_unknown_provider_capability_and_protocol_are_rejected():
+    with pytest.raises(ValueError, match="未知 capabilities"):
+        provider_profiles(
+            {
+                "providers": [
+                    {
+                        "provider_id": "bad-capability",
+                        "capabilities": "text_to_imgae",
+                    }
+                ]
+            }
+        )
+    with pytest.raises(ValueError, match="未知 provider protocol"):
+        provider_profiles(
+            {
+                "providers": [
+                    {
+                        "provider_id": "bad-protocol",
+                        "protocol": "openai_compatiable",
+                    }
+                ]
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("configured_count", "request_count", "count_explicit", "expected_count"),
+    [
+        (3, 1, False, 3),
+        (4, 2, True, 2),
+    ],
+)
+def test_openai_provider_respects_configured_and_explicit_image_counts(
+    configured_count, request_count, count_explicit, expected_count
+):
+    async def scenario():
+        image_call = AsyncMock(
+            return_value={
+                "data": [
+                    {"url": f"https://cdn.invalid/{index}.png"}
+                    for index in range(expected_count)
+                ]
+            }
+        )
+        provider = OpenAICompatibleProvider(
+            _profile(
+                "openai_images",
+                {Capability.TEXT_TO_IMAGE},
+                n=configured_count,
+            )
+        )
+        request = GenerationRequest(
+            Capability.TEXT_TO_IMAGE,
+            "cat",
+            count=request_count,
+            count_explicit=count_explicit,
+        )
+
+        with patch("imagegen_core.providers.adapters.image_generation", image_call):
+            result = await provider.generate(request)
+
+        assert image_call.await_args.args[0]["n"] == expected_count
+        assert len(result.media) == expected_count
+
+    asyncio.run(scenario())
 
 
 def test_gemini_native_codec_sends_inline_reference_and_parses_image():
@@ -122,9 +201,7 @@ def test_minimax_generic_video_codec_submits_polls_and_retrieves_file():
         )
         sleep = AsyncMock()
         handles = []
-        provider = GenericJsonProvider(
-            _profile("minimax", {Capability.TEXT_TO_VIDEO})
-        )
+        provider = GenericJsonProvider(_profile("minimax", {Capability.TEXT_TO_VIDEO}))
 
         with (
             patch("imagegen_core.native_providers.adapters._post_json", post),

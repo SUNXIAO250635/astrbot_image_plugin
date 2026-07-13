@@ -10,7 +10,7 @@ from .models import ReferenceAsset
 
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
-LoadImage = Callable[[str, str], Awaitable[tuple[bytes | None, str | None]]]
+LoadImage = Callable[[str, str, int | None], Awaitable[tuple[bytes | None, str | None]]]
 CachedReference = Callable[[], Awaitable[list[dict]]]
 
 
@@ -58,10 +58,15 @@ class ReferenceResolver:
         assets = []
         total_bytes = 0
         for index, candidate in enumerate(candidates[: max(1, max_images)], start=1):
-            data, filename = await self.load_image(candidate.value, candidate.filename)
+            data, filename = await self.load_image(
+                candidate.value, candidate.filename, max_single_bytes
+            )
             if not data:
                 continue
-            if len(data) > max_single_bytes or total_bytes + len(data) > max_total_bytes:
+            if (
+                len(data) > max_single_bytes
+                or total_bytes + len(data) > max_total_bytes
+            ):
                 continue
             total_bytes += len(data)
             assets.append(
@@ -99,7 +104,9 @@ class ReferenceResolver:
             for key in ("message", "messages", "content", "chain", "nodes", "data"):
                 nested = value.get(key)
                 if nested is not None:
-                    candidates.extend(self._walk(nested, _nested_source(source, key), seen))
+                    candidates.extend(
+                        self._walk(nested, _nested_source(source, key), seen)
+                    )
             return candidates
         if isinstance(value, (list, tuple, set)):
             candidates = []
@@ -122,7 +129,9 @@ class ReferenceResolver:
         ):
             nested = getattr(value, attr, None)
             if nested is not None and nested is not value:
-                candidates.extend(self._walk(nested, _nested_source(source, attr), seen))
+                candidates.extend(
+                    self._walk(nested, _nested_source(source, attr), seen)
+                )
         return candidates
 
     async def _extract_platform_references(self, event) -> list[ReferenceCandidate]:
@@ -298,7 +307,9 @@ def _group_file_ids(event) -> list[tuple[str, str, str]]:
         busid = getattr(component, "busid", None) or getattr(component, "bus_id", None)
         direct_value = str(direct or "")
         direct_is_resolvable = bool(
-            direct_value.startswith(("http://", "https://", "data:image/", "base64://", "file://"))
+            direct_value.startswith(
+                ("http://", "https://", "data:image/", "base64://", "file://")
+            )
             or os.path.exists(direct_value)
         )
         if (
@@ -350,7 +361,11 @@ async def _fetch_group_file_url(event, file_id: str, busid: str) -> str:
             if isinstance(result, str):
                 return result
             if isinstance(result, dict):
-                data = result.get("data") if isinstance(result.get("data"), dict) else result
+                data = (
+                    result.get("data")
+                    if isinstance(result.get("data"), dict)
+                    else result
+                )
                 url = data.get("url") if isinstance(data, dict) else None
                 if url:
                     return str(url)

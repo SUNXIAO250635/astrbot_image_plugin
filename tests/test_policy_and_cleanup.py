@@ -55,6 +55,27 @@ def test_concurrency_lease_blocks_then_releases():
     asyncio.run(scenario())
 
 
+def test_rate_limiter_logs_kv_failures(caplog):
+    class BrokenOwner:
+        async def get_kv_data(self, key, default=None):
+            raise RuntimeError("read failed")
+
+        async def put_kv_data(self, key, value):
+            raise RuntimeError("write failed")
+
+    async def scenario():
+        limiter = PersistentRateLimiter(BrokenOwner())
+        await limiter.acquire(
+            CallerContext(sender_id="user-1"), Capability.TEXT_TO_IMAGE
+        )
+
+    with caplog.at_level("WARNING", logger="imagegen_core.policy"):
+        asyncio.run(scenario())
+
+    assert "Failed to read plugin KV key imagegen_rate:state" in caplog.text
+    assert "Failed to write plugin KV key imagegen_rate:state" in caplog.text
+
+
 def test_blacklist_takes_priority_over_whitelist():
     config = plugin_config()
     config["access_control"] = {
@@ -84,9 +105,7 @@ def test_cleanup_removes_only_expired_managed_files(tmp_path):
         os.utime(expired, (old, old))
         os.utime(active, (old, old))
         os.utime(outside, (old, old))
-        cleaner = CleanupManager(
-            str(managed), ttl_seconds=60, interval_seconds=60
-        )
+        cleaner = CleanupManager(str(managed), ttl_seconds=60, interval_seconds=60)
 
         removed = await cleaner.run_once([str(active)])
 

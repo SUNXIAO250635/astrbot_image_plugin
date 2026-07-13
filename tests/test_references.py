@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock, patch
 
 import astrbot.api.message_components as Comp
 
+import main
 from imagegen_core.references import ReferenceResolver
-from tests.fakes.runtime import FakeEvent, image_data_uri
+from tests.fakes.runtime import FakeContext, FakeEvent, image_data_uri, plugin_config
 
 
 class Reply:
@@ -62,7 +64,7 @@ class FakeBot:
         return {"data": {"url": "https://cdn.invalid/group-signed"}}
 
 
-async def _load(value, filename):
+async def _load(value, filename, max_bytes=None):
     return value.encode(), filename
 
 
@@ -116,9 +118,7 @@ def test_resolver_fetches_onebot_file_when_file_field_is_only_a_filename():
 
         assets = await resolver.resolve(event, max_images=4)
 
-        assert [asset.value for asset in assets] == [
-            "https://cdn.invalid/group-signed"
-        ]
+        assert [asset.value for asset in assets] == ["https://cdn.invalid/group-signed"]
         assert assets[0].source == "group_file"
 
     asyncio.run(scenario())
@@ -171,5 +171,39 @@ def test_resolver_enforces_single_and_total_byte_limits():
         )
 
         assert len(assets) == 1
+
+    asyncio.run(scenario())
+
+
+def test_reference_download_stops_when_stream_exceeds_limit():
+    class Content:
+        async def iter_chunked(self, _size):
+            yield b"1234"
+            yield b"5678"
+
+    class Response:
+        status = 200
+        headers = {}
+        content = Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Session:
+        def get(self, *args, **kwargs):
+            return Response()
+
+    async def scenario():
+        plugin = main.ImageGenPlugin(FakeContext(), plugin_config())
+        with patch.object(main, "get_session", AsyncMock(return_value=Session())):
+            data, filename = await plugin._load_image_bytes(
+                "https://cdn.invalid/large.png", "large.png", max_bytes=5
+            )
+
+        assert data is None
+        assert filename is None
 
     asyncio.run(scenario())

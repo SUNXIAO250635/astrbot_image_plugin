@@ -3,6 +3,7 @@
 通过指令调用文生图、图生图、文生视频、图生视频。
 适配四种 OpenAI 兼容接口。
 """
+
 from __future__ import annotations
 
 import base64
@@ -53,8 +54,8 @@ DECISION_PROMPT_ENHANCE_SYSTEM_PROMPT = (
     "如果用户语义上要求生成多张图片，请把数量写入 image_count；没有明确要求则 image_count=null。"
     "prompt 字段只写给生成模型的一条提示词，不要包含“生成几张/输出几张/返回几张”这类数量指令。"
     "只输出 JSON，不要 Markdown。格式："
-    "{\"should_optimize\":true,\"image_count\":null,\"image_count_explicit\":false,"
-    "\"prompt\":\"最终提示词\",\"reason\":\"简短原因\"}"
+    '{"should_optimize":true,"image_count":null,"image_count_explicit":false,'
+    '"prompt":"最终提示词","reason":"简短原因"}'
 )
 
 PREVIOUS_PROMPT_PLAN_SYSTEM_PROMPT = (
@@ -66,8 +67,8 @@ PREVIOUS_PROMPT_PLAN_SYSTEM_PROMPT = (
     "如果用户说“给我三版方案/出两套/生成 4 张/多来几张”等，image_count 写对应数量；没有明确数量则为 null。"
     "prompt 字段只允许清理命令词、数量词、控制词，不能新增主体、镜头、光线、风格、画质等细节。"
     "只输出 JSON，不要 Markdown。格式："
-    "{\"should_optimize\":false,\"image_count\":3,\"image_count_explicit\":true,"
-    "\"prompt\":\"清理后的原始生成提示词\",\"reason\":\"简短原因\"}"
+    '{"should_optimize":false,"image_count":3,"image_count_explicit":true,'
+    '"prompt":"清理后的原始生成提示词","reason":"简短原因"}'
 )
 
 DEFAULT_PROMPT_PLAN_SYSTEM_PROMPT = (
@@ -81,8 +82,8 @@ DEFAULT_PROMPT_PLAN_SYSTEM_PROMPT = (
     "如果用户说“给我三版方案/出两套/生成 4 张/多来几张”等，image_count 写对应数量；没有明确数量则为 null。"
     "prompt 字段只允许清理命令词、数量词、控制词，不能新增主体、镜头、光线、风格、画质等细节。"
     "只输出 JSON，不要 Markdown。格式："
-    "{\"should_optimize\":true,\"image_count\":3,\"image_count_explicit\":true,"
-    "\"prompt\":\"清理后的原始生成提示词\",\"reason\":\"简短原因\"}"
+    '{"should_optimize":true,"image_count":3,"image_count_explicit":true,'
+    '"prompt":"清理后的原始生成提示词","reason":"简短原因"}'
 )
 
 DEFAULT_PROMPT_ENHANCE_SYSTEM_PROMPT = (
@@ -108,12 +109,12 @@ DEFAULT_IMAGE_EDIT_PLAN_SYSTEM_PROMPT = (
     "如果用户语义上要求生成多张结果图，请把数量写入 output_image_count；没有明确要求则为 null。"
     "prompt 字段不要包含“生成几张/输出几张/返回几张”这类结果数量指令。"
     "只输出 JSON，不要 Markdown。格式："
-    "{\"requires_current_images\":true,\"required_image_count\":2,"
-    "\"should_plan\":true,\"allow_cached_single_image\":false,"
-    "\"prompt\":\"最终图生图提示词\",\"primary_image_index\":1,"
-    "\"reference_image_indexes\":[2,3],\"output_image_count\":null,"
-    "\"summary\":\"一句话说明理解结果\","
-    "\"reason\":\"简短原因\"}"
+    '{"requires_current_images":true,"required_image_count":2,'
+    '"should_plan":true,"allow_cached_single_image":false,'
+    '"prompt":"最终图生图提示词","primary_image_index":1,'
+    '"reference_image_indexes":[2,3],"output_image_count":null,'
+    '"summary":"一句话说明理解结果",'
+    '"reason":"简短原因"}'
 )
 
 DEFAULT_GENERATION_INTENT_SYSTEM_PROMPT = (
@@ -121,8 +122,11 @@ DEFAULT_GENERATION_INTENT_SYSTEM_PROMPT = (
     "选择 capability：text_to_image、image_to_image、text_to_video、image_to_video。"
     "识别 preset：头像、海报、壁纸、卡片、手机壁纸、手办化、表情包、风格转换；"
     "没有预设则为空。提取生成数量 count，并保留用户全部关键条件。"
+    "同时判断提示词是否确实需要扩写：过短、过泛时 should_optimize=true；"
+    "用户要求不要优化或提示词已经具体完整时 should_optimize=false。"
     "只输出 JSON，不要 Markdown。格式："
     '{"capability":"text_to_image","preset":"","count":1,'
+    '"count_explicit":false,"should_optimize":true,'
     '"prompt":"交给生成模型的需求","reason":"简短原因"}'
 )
 
@@ -137,6 +141,7 @@ try:
         GenerationService,
         JobManager,
         IntentPlanner,
+        LegacyAdapterRunner,
         MediaArtifact,
         PersistentRateLimiter,
         ProviderFailure,
@@ -146,6 +151,7 @@ try:
         SmartMemeSplitter,
     )
     from .imagegen_core.presets import get_preset
+    from .imagegen_core.http_client import close_all_sessions, get_session
 except ImportError:
     import adapters
     from media import extract_all_media, download_to_file
@@ -157,6 +163,7 @@ except ImportError:
         GenerationService,
         JobManager,
         IntentPlanner,
+        LegacyAdapterRunner,
         MediaArtifact,
         PersistentRateLimiter,
         ProviderFailure,
@@ -166,10 +173,16 @@ except ImportError:
         SmartMemeSplitter,
     )
     from imagegen_core.presets import get_preset
+    from imagegen_core.http_client import close_all_sessions, get_session
 
 
-@register("astrbot_plugin_imagegen", "sunx", "多模态生图视频插件", "0.6.0",
-          repo="https://github.com/SUNXIAO250635/astrbot_image_plugin")
+@register(
+    "astrbot_plugin_imagegen",
+    "sunx",
+    "多模态生图视频插件",
+    "1.1.0",
+    repo="https://github.com/SUNXIAO250635/astrbot_image_plugin",
+)
 class ImageGenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -178,6 +191,13 @@ class ImageGenPlugin(Star):
         self._generation_service = GenerationService(self.config)
         self._reference_resolver = ReferenceResolver(self._load_image_bytes)
         self._intent_planner = IntentPlanner()
+        self._legacy_runner = LegacyAdapterRunner(
+            self._cfg,
+            self._cfg_with_output_count,
+            self._complete_requested_media_count,
+            lambda: self._timeout,
+            lambda: self._proxy,
+        )
         jobs_cfg = self._cfg("jobs")
         self._job_manager = JobManager(
             self,
@@ -185,10 +205,14 @@ class ImageGenPlugin(Star):
                 jobs_cfg.get("foreground_wait_seconds"), 15.0, 0.01, 300.0
             ),
             enabled=self._cfg_bool(jobs_cfg.get("enabled", True), True),
+            terminal_retention_seconds=self._safe_float(
+                jobs_cfg.get("terminal_retention_seconds"),
+                86400.0,
+                0.0,
+                2592000.0,
+            ),
         )
-        self._rate_limiter = PersistentRateLimiter(
-            self, self._cfg("rate_limit")
-        )
+        self._rate_limiter = PersistentRateLimiter(self, self._cfg("rate_limit"))
         cleanup_cfg = self._cfg("cleanup")
         self._cleanup_manager = CleanupManager(
             self._save_dir,
@@ -212,7 +236,7 @@ class ImageGenPlugin(Star):
 
     @image_group.command("help", alias={"帮助"})
     async def help_(self, event: AstrMessageEvent):
-        '''显示帮助'''
+        """显示帮助"""
         yield event.plain_result(
             "🖼️ 画图/视频插件\n"
             "/画 文 <提示词>          文生图(image-generation)\n"
@@ -226,7 +250,7 @@ class ImageGenPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def remember_incoming_image(self, event: AstrMessageEvent):
-        '''记录用户最近发送的图片，供后续图生图/图生视频复用'''
+        """记录用户最近发送的图片，供后续图生图/图生视频复用"""
         if not self._previous_image_enabled:
             return
         image_ref = self._extract_first_image_ref(event)
@@ -237,13 +261,15 @@ class ImageGenPlugin(Star):
 
     @image_group.command("文", alias={"文生图", "txt2img"})
     async def text_to_image(self, event: AstrMessageEvent, prompt: str = ""):
-        '''文生图，使用 image-generation 接口'''
+        """文生图，使用 image-generation 接口"""
         denied = self._access_denied_result(event)
         if denied is not None:
             yield denied
             event.stop_event()
             return
-        prompt = self._prompt_from_event_or_arg(event, prompt, "文", "文生图", "txt2img")
+        prompt = self._prompt_from_event_or_arg(
+            event, prompt, "文", "文生图", "txt2img"
+        )
         if not prompt:
             yield event.plain_result("❌ 请提供提示词，例如: /画 文 一只猫")
             event.stop_event()
@@ -257,13 +283,15 @@ class ImageGenPlugin(Star):
 
     @image_group.command("图", alias={"图生图", "img2img"})
     async def image_to_image(self, event: AstrMessageEvent, prompt: str = ""):
-        '''图生图，使用 image-edits 接口，需附带图片'''
+        """图生图，使用 image-edits 接口，需附带图片"""
         denied = self._access_denied_result(event)
         if denied is not None:
             yield denied
             event.stop_event()
             return
-        prompt = self._prompt_from_event_or_arg(event, prompt, "图", "图生图", "img2img")
+        prompt = self._prompt_from_event_or_arg(
+            event, prompt, "图", "图生图", "img2img"
+        )
         if not prompt:
             yield event.plain_result("❌ 请提供提示词，例如: /画 图 改成水彩")
             event.stop_event()
@@ -334,13 +362,15 @@ class ImageGenPlugin(Star):
 
     @image_group.command("视频", alias={"文生视频", "txt2video"})
     async def text_to_video(self, event: AstrMessageEvent, prompt: str = ""):
-        '''文生视频'''
+        """文生视频"""
         denied = self._access_denied_result(event)
         if denied is not None:
             yield denied
             event.stop_event()
             return
-        prompt = self._prompt_from_event_or_arg(event, prompt, "视频", "文生视频", "txt2video")
+        prompt = self._prompt_from_event_or_arg(
+            event, prompt, "视频", "文生视频", "txt2video"
+        )
         if not prompt:
             yield event.plain_result("❌ 请提供提示词，例如: /画 视频 火车穿越雪山")
             event.stop_event()
@@ -355,7 +385,7 @@ class ImageGenPlugin(Star):
 
     @image_group.command("图生视频", alias={"img2video"})
     async def image_to_video(self, event: AstrMessageEvent, prompt: str = ""):
-        '''图生视频，需附带图片'''
+        """图生视频，需附带图片"""
         denied = self._access_denied_result(event)
         if denied is not None:
             yield denied
@@ -384,7 +414,9 @@ class ImageGenPlugin(Star):
         strategy = self._cfg_value(
             "image_to_video_strategy", "openai_video", "generation_options"
         )
-        yield await self._do_image_to_video(event, prompt, img_bytes, img_name, strategy)
+        yield await self._do_image_to_video(
+            event, prompt, img_bytes, img_name, strategy
+        )
 
     @image_group.command("头像")
     async def preset_avatar(self, event: AstrMessageEvent, prompt: str = ""):
@@ -408,22 +440,30 @@ class ImageGenPlugin(Star):
 
     @image_group.command("手机壁纸")
     async def preset_phone_wallpaper(self, event: AstrMessageEvent, prompt: str = ""):
-        for result in await self._run_natural_generation(event, prompt, preset="手机壁纸"):
+        for result in await self._run_natural_generation(
+            event, prompt, preset="手机壁纸"
+        ):
             yield result
 
     @image_group.command("手办化", alias={"手办"})
     async def preset_figurine(self, event: AstrMessageEvent, prompt: str = ""):
-        for result in await self._run_natural_generation(event, prompt, preset="手办化"):
+        for result in await self._run_natural_generation(
+            event, prompt, preset="手办化"
+        ):
             yield result
 
     @image_group.command("表情包", alias={"贴纸"})
     async def preset_meme(self, event: AstrMessageEvent, prompt: str = ""):
-        for result in await self._run_natural_generation(event, prompt, preset="表情包"):
+        for result in await self._run_natural_generation(
+            event, prompt, preset="表情包"
+        ):
             yield result
 
     @image_group.command("风格转换", alias={"转风格"})
     async def preset_style(self, event: AstrMessageEvent, prompt: str = ""):
-        for result in await self._run_natural_generation(event, prompt, preset="风格转换"):
+        for result in await self._run_natural_generation(
+            event, prompt, preset="风格转换"
+        ):
             yield result
 
     @filter.llm_tool(name="generate_media")
@@ -434,13 +474,13 @@ class ImageGenPlugin(Star):
         mode: str = "auto",
         preset: str = "",
     ):
-        '''根据自然语言生成或编辑图片、视频。
+        """根据自然语言生成或编辑图片、视频。
 
         Args:
             prompt(string): 用户的完整生成或编辑需求
             mode(string): auto、文生图、图生图、文生视频或图生视频
             preset(string): 可选预设，头像、海报、壁纸、卡片、手机壁纸、手办化、表情包或风格转换
-        '''
+        """
         for result in await self._run_natural_generation(
             event, prompt, mode=mode, preset=preset
         ):
@@ -460,7 +500,9 @@ class ImageGenPlugin(Star):
         except ValueError:
             inside_data = False
         if os.path.isabs(subdir) or not inside_data or candidate == data_root:
-            logger.warning("media.save_dir 必须是 data/ 下的相对子目录，已回退到 imagegen")
+            logger.warning(
+                "media.save_dir 必须是 data/ 下的相对子目录，已回退到 imagegen"
+            )
             candidate = os.path.join(data_root, "imagegen")
         os.makedirs(candidate, exist_ok=True)
         return candidate
@@ -475,14 +517,23 @@ class ImageGenPlugin(Star):
 
     @property
     def _multi_media_send_mode(self) -> str:
-        value = str((self.config.get("media", {}) or {}).get(
-            "multi_media_send_mode", "sequential"
-        ) or "sequential").strip().lower()
+        value = (
+            str(
+                (self.config.get("media", {}) or {}).get(
+                    "multi_media_send_mode", "sequential"
+                )
+                or "sequential"
+            )
+            .strip()
+            .lower()
+        )
         return value if value in {"sequential", "chain"} else "sequential"
 
     @property
     def _multi_media_send_interval(self) -> float:
-        value = (self.config.get("media", {}) or {}).get("multi_media_send_interval", 0.8)
+        value = (self.config.get("media", {}) or {}).get(
+            "multi_media_send_interval", 0.8
+        )
         try:
             return max(0.0, min(5.0, float(value)))
         except (TypeError, ValueError):
@@ -529,13 +580,18 @@ class ImageGenPlugin(Star):
                 event,
                 prompt,
                 preset,
-                *[alias for alias, key in {
-                    "手办": "手办化",
-                    "贴纸": "表情包",
-                    "转风格": "风格转换",
-                }.items() if key == preset],
+                *[
+                    alias
+                    for alias, key in {
+                        "手办": "手办化",
+                        "贴纸": "表情包",
+                        "转风格": "风格转换",
+                    }.items()
+                    if key == preset
+                ],
             )
         prompt = (prompt or "").strip()
+        original_prompt = prompt
         cache_markers = ("上一张", "刚才那张", "上张图", "前一张", "之前的图")
         normalized_mode = (mode or "auto").strip().lower()
         allow_cached = (
@@ -589,12 +645,17 @@ class ImageGenPlugin(Star):
                 except Exception as exc:
                     logger.warning(f"多模态生成意图规划失败，使用本地判断: {exc}")
 
+        if self._prompt_requests_no_enhancement(original_prompt):
+            plan.should_optimize = False
+
         selected_preset = get_preset(preset) or get_preset(plan.preset)
         if selected_preset and selected_preset.reference_preferred and assets:
             if plan.capability == Capability.TEXT_TO_IMAGE:
                 plan.capability = Capability.IMAGE_TO_IMAGE
         if plan.capability.needs_reference and not assets:
-            return [event.plain_result("❌ 该生成需求需要参考图片，但没有找到可用图片。")]
+            return [
+                event.plain_result("❌ 该生成需求需要参考图片，但没有找到可用图片。")
+            ]
         generation_prompt = plan.prompt
         size = ""
         if selected_preset:
@@ -606,14 +667,23 @@ class ImageGenPlugin(Star):
         notice = None
         output_count = plan.count if plan.count_explicit else None
         if plan.capability.media_kind == "image":
-            generation_prompt, notice, detected_count = await self._prepare_image_prompt(
-                generation_prompt, plan.capability.value
+            (
+                generation_prompt,
+                notice,
+                detected_count,
+            ) = await self._prepare_image_prompt(
+                generation_prompt,
+                plan.capability.value,
+                semantic_should_optimize=plan.should_optimize,
+                semantic_count=output_count,
             )
             if detected_count:
                 output_count = detected_count
         else:
             generation_prompt, notice = await self._prepare_prompt(
-                generation_prompt, plan.capability.value
+                generation_prompt,
+                plan.capability.value,
+                semantic_should_optimize=plan.should_optimize,
             )
         task_names = {
             Capability.TEXT_TO_IMAGE: "文生图",
@@ -639,9 +709,11 @@ class ImageGenPlugin(Star):
 
     @property
     def _router_enabled(self) -> bool:
-        mode = str(
-            self._cfg_value("mode", "router", "compatibility") or "router"
-        ).strip().lower()
+        mode = (
+            str(self._cfg_value("mode", "router", "compatibility") or "router")
+            .strip()
+            .lower()
+        )
         return mode != "legacy"
 
     def _prompt_from_event_or_arg(
@@ -661,7 +733,9 @@ class ImageGenPlugin(Star):
             return event_prompt
         if self._prompt_requests_no_enhancement(event_prompt):
             return event_prompt
-        if self._requested_output_count(event_prompt) and not self._requested_output_count(arg_prompt):
+        if self._requested_output_count(
+            event_prompt
+        ) and not self._requested_output_count(arg_prompt):
             return event_prompt
         return arg_prompt
 
@@ -782,9 +856,8 @@ class ImageGenPlugin(Star):
     @property
     def _prompt_plan_system_prompt(self) -> str:
         options_cfg = self._cfg("generation_options")
-        prompt = (
-            self.config.get("prompt_plan_system_prompt")
-            or options_cfg.get("prompt_plan_system_prompt")
+        prompt = self.config.get("prompt_plan_system_prompt") or options_cfg.get(
+            "prompt_plan_system_prompt"
         )
         if not prompt or str(prompt).strip() in {
             LEGACY_PROMPT_ENHANCE_SYSTEM_PROMPT,
@@ -852,32 +925,77 @@ class ImageGenPlugin(Star):
         cfg["system_prompt"] = system_prompt
         return cfg
 
-    async def _prepare_prompt(self, prompt: str, task_name: str) -> tuple:
+    async def _prepare_prompt(
+        self,
+        prompt: str,
+        task_name: str,
+        *,
+        semantic_should_optimize: bool | None = None,
+    ) -> tuple:
         """可选地用 chat completions 优化提示词；失败时回退原文。"""
         final_prompt, notice, _count = await self._prepare_prompt_details(
-            prompt, task_name, allow_image_count=False
+            prompt,
+            task_name,
+            allow_image_count=False,
+            semantic_should_optimize=semantic_should_optimize,
         )
         return final_prompt, notice
 
-    async def _prepare_image_prompt(self, prompt: str, task_name: str) -> tuple:
+    async def _prepare_image_prompt(
+        self,
+        prompt: str,
+        task_name: str,
+        *,
+        semantic_should_optimize: bool | None = None,
+        semantic_count=None,
+    ) -> tuple:
         """准备图片生成提示词，同时解析用户语义里的输出张数。"""
         return await self._prepare_prompt_details(
-            prompt, task_name, allow_image_count=True
+            prompt,
+            task_name,
+            allow_image_count=True,
+            semantic_should_optimize=semantic_should_optimize,
+            semantic_count=semantic_count,
         )
 
     async def _prepare_prompt_details(
-        self, prompt: str, task_name: str, allow_image_count: bool = False
+        self,
+        prompt: str,
+        task_name: str,
+        allow_image_count: bool = False,
+        *,
+        semantic_should_optimize: bool | None = None,
+        semantic_count=None,
     ) -> tuple:
         """返回 (最终提示词, 可发送说明, 输出图片数量或 None)。"""
         original = (prompt or "").strip()
-        fallback_count = (
-            self._requested_output_count(original) if allow_image_count else None
-        )
+        fallback_count = semantic_count if allow_image_count else None
+        if allow_image_count and fallback_count is None:
+            fallback_count = self._requested_output_count(original)
         source_prompt = self._fallback_generation_prompt(original, fallback_count)
         if not original:
             return "", None, fallback_count
         if not self._prompt_enhance_enabled:
             return source_prompt, None, fallback_count
+
+        if semantic_should_optimize is not None:
+            if not semantic_should_optimize:
+                return source_prompt, None, fallback_count
+            try:
+                enhanced = await self._enhance_prompt_once(source_prompt, task_name)
+            except Exception as e:
+                logger.warning(f"提示词优化失败，使用语义规划提示词: {e}")
+                return source_prompt, None, fallback_count
+            if not enhanced or self._is_prompt_enhancement_degraded(
+                source_prompt, enhanced
+            ):
+                return source_prompt, None, fallback_count
+            notice = (
+                f"✨ 优化后的提示词：\n{enhanced}"
+                if self._prompt_enhance_show_prompt
+                else None
+            )
+            return enhanced, notice, fallback_count
 
         chat_cfg = self._chat_cfg_for_prompt_tools(self._prompt_plan_system_prompt)
         if not chat_cfg.get("base_url"):
@@ -1078,7 +1196,9 @@ class ImageGenPlugin(Star):
             ImageGenPlugin._strip_prompt_control_phrases(original)
         )
         candidate_len = ImageGenPlugin._prompt_signal_len(candidate)
-        return bool(original_len and candidate_len > max(original_len * 1.8, original_len + 40))
+        return bool(
+            original_len and candidate_len > max(original_len * 1.8, original_len + 40)
+        )
 
     @classmethod
     def _fallback_generation_prompt(cls, prompt: str, output_count=None) -> str:
@@ -1262,7 +1382,10 @@ class ImageGenPlugin(Star):
         occupied = []
         for item in matches:
             _count, start, end = item
-            if any(not (end <= used_start or start >= used_end) for used_start, used_end in occupied):
+            if any(
+                not (end <= used_start or start >= used_end)
+                for used_start, used_end in occupied
+            ):
                 continue
             selected.append(item)
             occupied.append((start, end))
@@ -1297,17 +1420,21 @@ class ImageGenPlugin(Star):
         }
         return values.get(text)
 
-    async def _plan_image_edit_once(self, prompt: str, current_image_items: list) -> dict:
+    async def _plan_image_edit_once(
+        self, prompt: str, current_image_items: list
+    ) -> dict:
         """用一次 Chat 完成图生图意图判断、图片选择和提示词规划。"""
         original = (prompt or "").strip()
         fallback = self._fallback_image_edit_intent(original, len(current_image_items))
-        fallback.update({
-            "prompt": "",
-            "primary_image_index": None,
-            "reference_image_indexes": [],
-            "summary": "",
-            "chat_used": False,
-        })
+        fallback.update(
+            {
+                "prompt": "",
+                "primary_image_index": None,
+                "reference_image_indexes": [],
+                "summary": "",
+                "chat_used": False,
+            }
+        )
         if not self._image_edit_plan_enabled:
             return fallback
 
@@ -1332,7 +1459,9 @@ class ImageGenPlugin(Star):
                 chat_cfg,
                 plan_prompt,
                 image_bytes=image_bytes if self._image_edit_plan_send_images else None,
-                image_filename=image_names if self._image_edit_plan_send_images else None,
+                image_filename=image_names
+                if self._image_edit_plan_send_images
+                else None,
                 timeout=self._timeout,
                 proxy=self._proxy,
             )
@@ -1354,7 +1483,11 @@ class ImageGenPlugin(Star):
         selected_items = self._select_planned_images(image_items, plan)
         planned_prompt = self._clean_prompt_text((plan or {}).get("prompt", ""))
         if planned_prompt:
-            return planned_prompt, self._image_edit_plan_notice(plan, planned_prompt), selected_items
+            return (
+                planned_prompt,
+                self._image_edit_plan_notice(plan, planned_prompt),
+                selected_items,
+            )
 
         if (plan or {}).get("chat_used"):
             return original, None, selected_items
@@ -1578,7 +1711,7 @@ class ImageGenPlugin(Star):
         if start == -1 or end == -1 or end <= start:
             return {}
         try:
-            data = json.loads(text[start:end + 1])
+            data = json.loads(text[start : end + 1])
         except Exception:
             return {}
         return data if isinstance(data, dict) else {}
@@ -1723,7 +1856,7 @@ class ImageGenPlugin(Star):
         )
         for prefix in prefixes:
             if text.startswith(prefix):
-                text = text[len(prefix):].strip()
+                text = text[len(prefix) :].strip()
                 break
 
         quote_pairs = {('"', '"'), ("'", "'"), ("“", "”"), ("「", "」")}
@@ -1928,8 +2061,11 @@ class ImageGenPlugin(Star):
         refs = []
         for comp in chain:
             if isinstance(comp, Comp.Image):
-                value = getattr(comp, "url", None) or getattr(comp, "file", None) \
+                value = (
+                    getattr(comp, "url", None)
+                    or getattr(comp, "file", None)
                     or getattr(comp, "path", None)
+                )
                 if value:
                     value = str(value)
                     refs.append((value, self._image_ref_filename(value)))
@@ -1947,7 +2083,12 @@ class ImageGenPlugin(Star):
             return os.path.basename(unquote(parsed.path)) or "input.png"
         return os.path.basename(value) or "input.png"
 
-    async def _load_image_bytes(self, value: str, filename: str = "input.png") -> tuple:
+    async def _load_image_bytes(
+        self,
+        value: str,
+        filename: str = "input.png",
+        max_bytes: int | None = None,
+    ) -> tuple:
         if not value:
             return None, None
         value = str(value)
@@ -1955,19 +2096,34 @@ class ImageGenPlugin(Star):
             try:
                 timeout_cfg = aiohttp.ClientTimeout(total=self._timeout)
                 proxy_kw = {"proxy": self._proxy} if self._proxy else {}
-                async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-                    async with session.get(value, **proxy_kw) as resp:
-                        if resp.status != 200:
+                session = await get_session()
+                async with session.get(value, timeout=timeout_cfg, **proxy_kw) as resp:
+                    if resp.status != 200:
+                        return None, None
+                    content_length = resp.headers.get("Content-Length")
+                    try:
+                        declared_length = int(content_length) if content_length else 0
+                    except (TypeError, ValueError):
+                        declared_length = 0
+                    if max_bytes and declared_length > max_bytes:
+                        logger.warning("参考图超过单图大小限制，已跳过下载")
+                        return None, None
+                    chunks = []
+                    total = 0
+                    async for chunk in resp.content.iter_chunked(1 << 16):
+                        total += len(chunk)
+                        if max_bytes and total > max_bytes:
+                            logger.warning("参考图下载超过单图大小限制，已中止")
                             return None, None
-                        data = await resp.read()
-                        return data, filename or "input.png"
+                        chunks.append(chunk)
+                    return b"".join(chunks), filename or "input.png"
             except Exception as e:
                 logger.warning(f"下载图片失败: {e}")
                 return None, None
 
         if value.startswith("base64://"):
             try:
-                data = base64.b64decode(value[len("base64://"):])
+                data = base64.b64decode(value[len("base64://") :])
                 return data, filename or "input.png"
             except Exception as e:
                 logger.warning(f"解析 base64 图片失败: {e}")
@@ -1983,7 +2139,7 @@ class ImageGenPlugin(Star):
 
         if value.startswith("file://"):
             parsed = urlparse(value)
-            value = unquote(parsed.path or value[len("file://"):])
+            value = unquote(parsed.path or value[len("file://") :])
             if os.name == "nt" and re.match(r"^/[A-Za-z]:/", value):
                 value = value[1:]
 
@@ -1993,9 +2149,7 @@ class ImageGenPlugin(Star):
 
         return None, None
 
-    async def _get_first_image_bytes(
-        self, event: AstrMessageEvent
-    ) -> tuple:
+    async def _get_first_image_bytes(self, event: AstrMessageEvent) -> tuple:
         """从入站消息链里取第一张图片，返回 (bytes, filename)。"""
         items = await self._get_image_items(event, max_images=1)
         if items:
@@ -2017,16 +2171,18 @@ class ImageGenPlugin(Star):
         """只读取当前消息里的图片，不引用缓存。"""
         items = []
         max_images = self._image_edit_max_images if max_images is None else max_images
-        refs = self._extract_image_refs(event)[:max(1, max_images)]
+        refs = self._extract_image_refs(event)[: max(1, max_images)]
         for index, image_ref in enumerate(refs, start=1):
             data, filename = await self._load_image_bytes(*image_ref)
             if data:
                 filename = filename or image_ref[1] or f"input_{index}.png"
-                items.append({
-                    "bytes": data,
-                    "filename": filename,
-                    "ref": image_ref[0],
-                })
+                items.append(
+                    {
+                        "bytes": data,
+                        "filename": filename,
+                        "ref": image_ref[0],
+                    }
+                )
 
         if items:
             self._remember_last_image(
@@ -2107,11 +2263,13 @@ class ImageGenPlugin(Star):
         if cached_ref[0]:
             data, filename = await self._load_image_bytes(*cached_ref)
             if data:
-                return [{
-                    "bytes": data,
-                    "filename": filename or cached_ref[1] or "input.png",
-                    "ref": cached_ref[0],
-                }]
+                return [
+                    {
+                        "bytes": data,
+                        "filename": filename or cached_ref[1] or "input.png",
+                        "ref": cached_ref[0],
+                    }
+                ]
         return []
 
     @staticmethod
@@ -2282,9 +2440,7 @@ class ImageGenPlugin(Star):
             metadata["postprocess"] = "meme"
         self._cleanup_manager.start(self._active_media_paths)
         try:
-            lease = await self._rate_limiter.acquire(
-                request.caller, request.capability
-            )
+            lease = await self._rate_limiter.acquire(request.caller, request.capability)
         except RateLimitExceeded as exc:
             return event.plain_result(f"❌ {exc}")
 
@@ -2293,20 +2449,22 @@ class ImageGenPlugin(Star):
                 generated = await self._generation_service.generate(request, on_handle)
                 if postprocess is not None:
                     processed = postprocess(generated)
-                    generated = await processed if inspect.isawaitable(processed) else processed
+                    generated = (
+                        await processed if inspect.isawaitable(processed) else processed
+                    )
                 return generated
             finally:
                 await self._rate_limiter.release(lease)
 
         try:
             jobs_cfg = self._cfg("jobs")
-            if self._cfg_bool(
-                jobs_cfg.get("restore_remote_video_tasks", True), True
-            ):
-                await self._job_manager.restore(
-                    self._generation_service.resume,
-                    self._background_job_completed,
-                )
+            await self._job_manager.restore(
+                self._generation_service.resume,
+                self._background_job_completed,
+                resume_enabled=self._cfg_bool(
+                    jobs_cfg.get("restore_remote_video_tasks", True), True
+                ),
+            )
             job_run = await self._job_manager.run(
                 operation,
                 self._background_job_completed,
@@ -2333,26 +2491,25 @@ class ImageGenPlugin(Star):
 
     async def _background_job_completed(
         self, job_id: str, result, error, metadata: dict
-    ) -> None:
+    ):
         caller = CallerContext.from_dict((metadata or {}).get("caller"))
         task_name = str((metadata or {}).get("task_name") or "生成")
         send_message = getattr(self.context, "send_message", None)
         if not caller.unified_msg_origin or not callable(send_message):
             logger.warning(f"后台任务 {job_id} 无法主动发送：缺少会话或平台能力")
-            return
+            raise RuntimeError("后台任务缺少可用的主动发送会话或平台能力")
         if error is not None:
-            try:
-                await send_message(
-                    caller.unified_msg_origin,
-                    MessageChain([Comp.Plain(f"❌ {task_name}失败：{error}")]),
-                )
-            except Exception as send_error:
-                logger.warning(f"后台任务 {job_id} 失败提示发送失败: {send_error}")
+            await self._send_background_chain(
+                send_message,
+                caller.unified_msg_origin,
+                MessageChain([Comp.Plain(f"❌ {task_name}失败：{error}")]),
+                job_id,
+                "失败提示",
+            )
             return
 
-        if (
-            metadata.get("postprocess") == "meme"
-            and isinstance(metadata.get("handle"), dict)
+        if metadata.get("postprocess") == "meme" and isinstance(
+            metadata.get("handle"), dict
         ):
             result = await self._postprocess_meme_result(result)
 
@@ -2393,24 +2550,63 @@ class ImageGenPlugin(Star):
                 self._remember_caller_image(caller, value, task_name)
 
         if not components:
-            try:
-                await send_message(
-                    caller.unified_msg_origin,
-                    MessageChain([Comp.Plain(f"❌ {task_name}完成但未找到可发送媒体。")]),
-                )
-            except Exception as send_error:
-                logger.warning(f"后台任务 {job_id} 空结果提示发送失败: {send_error}")
+            sent = await self._send_background_chain(
+                send_message,
+                caller.unified_msg_origin,
+                MessageChain([Comp.Plain(f"❌ {task_name}完成但未找到可发送媒体。")]),
+                job_id,
+                "空结果提示",
+            )
+            if not sent:
+                raise RuntimeError("后台空结果提示投递失败")
             return
+        failed_count = 0
         for component in components:
-            try:
-                await send_message(
-                    caller.unified_msg_origin,
-                    MessageChain([component]),
-                )
-            except Exception as send_error:
-                logger.warning(f"后台任务 {job_id} 媒体发送失败: {send_error}")
+            sent = await self._send_background_chain(
+                send_message,
+                caller.unified_msg_origin,
+                MessageChain([component]),
+                job_id,
+                "媒体",
+            )
+            if not sent:
+                failed_count += 1
             if self._multi_media_send_interval:
                 await asyncio.sleep(self._multi_media_send_interval)
+        if failed_count == len(components):
+            raise RuntimeError("后台媒体投递全部失败")
+        if failed_count:
+            return {
+                "status": "delivered_with_errors",
+                "delivery_errors": failed_count,
+                "delivered_count": len(components) - failed_count,
+            }
+        return {"status": "delivered", "delivered_count": len(components)}
+
+    async def _send_background_chain(
+        self, send_message, origin: str, chain: MessageChain, job_id: str, label: str
+    ) -> bool:
+        jobs_cfg = self._cfg("jobs")
+        try:
+            retries = int(jobs_cfg.get("delivery_retry_count", 2))
+        except (TypeError, ValueError):
+            retries = 2
+        retries = max(0, min(5, retries))
+        delay = self._safe_float(
+            jobs_cfg.get("delivery_retry_delay_seconds"), 1.0, 0.0, 30.0
+        )
+        for attempt in range(retries + 1):
+            try:
+                await send_message(origin, chain)
+                return True
+            except Exception as send_error:
+                logger.warning(
+                    f"后台任务 {job_id} {label}发送失败 "
+                    f"({attempt + 1}/{retries + 1}): {send_error}"
+                )
+                if attempt < retries and delay:
+                    await asyncio.sleep(delay)
+        return False
 
     def _remember_caller_image(
         self, caller: CallerContext, value: str, source: str
@@ -2418,7 +2614,9 @@ class ImageGenPlugin(Star):
         if not self._previous_image_enabled or not value:
             return
         origin = caller.unified_msg_origin or (
-            f"group:{caller.group_id}" if caller.group_id else f"user:{caller.sender_id}"
+            f"group:{caller.group_id}"
+            if caller.group_id
+            else f"user:{caller.sender_id}"
         )
         cache_key = f"{origin}:{caller.sender_id or 'unknown'}"
         self._last_image_cache[cache_key] = {
@@ -2499,7 +2697,7 @@ class ImageGenPlugin(Star):
     async def _meme_vision_boxes(self, image_path: str) -> list:
         chat_cfg = self._chat_cfg_for_prompt_tools(
             "你是表情包切片定位助手。识别图中的独立贴纸或表情包区域，"
-            "只输出 JSON：{\"boxes\":[{\"x\":0,\"y\":0,\"width\":100,\"height\":100}]}。"
+            '只输出 JSON：{"boxes":[{"x":0,"y":0,"width":100,"height":100}]}。'
             "坐标可以是像素，也可以是 0 到 1 的归一化数值。"
         )
         if not chat_cfg.get("base_url"):
@@ -2571,23 +2769,8 @@ class ImageGenPlugin(Star):
             )
 
         async def operation():
-            base_cfg = self._cfg("adapter_image_generation")
-            cfg = self._cfg_with_output_count(base_cfg, output_count)
             try:
-                resp = await adapters.image_generation(
-                    cfg, prompt, self._timeout, proxy=self._proxy
-                )
-                resp = await self._complete_requested_media_count(
-                    resp,
-                    output_count,
-                    lambda n: adapters.image_generation(
-                        self._cfg_with_output_count(base_cfg, n),
-                        prompt,
-                        self._timeout,
-                        proxy=self._proxy,
-                    ),
-                    "文生图",
-                )
+                resp = await self._legacy_runner.text_to_image(prompt, output_count)
             except adapters.ApiException as e:
                 return event.plain_result(f"❌ {e}")
             return await self._send_result(event, resp, "文生图")
@@ -2613,48 +2796,13 @@ class ImageGenPlugin(Star):
             )
 
         async def operation():
-            if strategy == "image_generation":
-                base_cfg = self._cfg("adapter_image_generation")
-                cfg = self._cfg_with_output_count(base_cfg, output_count)
-                try:
-                    resp = await adapters.image_generation(
-                        cfg, prompt, self._timeout, img_bytes, img_name, self._proxy
-                    )
-                    resp = await self._complete_requested_media_count(
-                        resp,
-                        output_count,
-                        lambda n: adapters.image_generation(
-                            self._cfg_with_output_count(base_cfg, n),
-                            prompt,
-                            self._timeout,
-                            img_bytes,
-                            img_name,
-                            self._proxy,
-                        ),
-                        "图生图",
-                    )
-                except adapters.ApiException as e:
-                    return event.plain_result(f"❌ {e}")
-                return await self._send_result(event, resp, "图生图")
-
-            base_cfg = self._cfg("adapter_image_edits")
-            cfg = self._cfg_with_output_count(base_cfg, output_count)
             try:
-                resp = await adapters.image_edits(
-                    cfg, prompt, img_bytes, img_name, self._timeout, self._proxy
-                )
-                resp = await self._complete_requested_media_count(
-                    resp,
+                resp = await self._legacy_runner.image_to_image(
+                    prompt,
+                    img_bytes,
+                    img_name,
+                    strategy,
                     output_count,
-                    lambda n: adapters.image_edits(
-                        self._cfg_with_output_count(base_cfg, n),
-                        prompt,
-                        img_bytes,
-                        img_name,
-                        self._timeout,
-                        self._proxy,
-                    ),
-                    "图生图",
                 )
             except adapters.ApiException as e:
                 return event.plain_result(f"❌ {e}")
@@ -2676,20 +2824,8 @@ class ImageGenPlugin(Star):
             )
 
         async def operation():
-            if strategy == "openai_chat":
-                cfg = self._cfg("adapter_openai_chat")
-                try:
-                    resp = await adapters.openai_chat(
-                        cfg, prompt, timeout=self._timeout, proxy=self._proxy
-                    )
-                except adapters.ApiException as e:
-                    return event.plain_result(f"❌ {e}")
-                return await self._send_result(event, resp, "文生视频", expect="video")
-            cfg = self._cfg("adapter_openai_video")
             try:
-                resp = await adapters.openai_video(
-                    cfg, prompt, None, None, self._timeout, self._proxy
-                )
+                resp = await self._legacy_runner.text_to_video(prompt, strategy)
             except adapters.ApiException as e:
                 return event.plain_result(f"❌ {e}")
             return await self._send_result(event, resp, "文生视频", expect="video")
@@ -2712,19 +2848,9 @@ class ImageGenPlugin(Star):
             )
 
         async def operation():
-            if strategy == "image_edits":
-                cfg = self._cfg("adapter_image_edits")
-                try:
-                    resp = await adapters.image_edits(
-                        cfg, prompt, img_bytes, img_name, self._timeout, self._proxy
-                    )
-                except adapters.ApiException as e:
-                    return event.plain_result(f"❌ {e}")
-                return await self._send_result(event, resp, "图生视频", expect="video")
-            cfg = self._cfg("adapter_openai_video")
             try:
-                resp = await adapters.openai_video(
-                    cfg, prompt, img_bytes, img_name, self._timeout, self._proxy
+                resp = await self._legacy_runner.image_to_video(
+                    prompt, img_bytes, img_name, strategy
                 )
             except adapters.ApiException as e:
                 return event.plain_result(f"❌ {e}")
@@ -2770,10 +2896,14 @@ class ImageGenPlugin(Star):
                 await asyncio.sleep(self._multi_media_send_interval)
 
         if failed_count:
-            return event.chain_result([
-                Comp.Plain(f"⚠️ 有 {failed_count} 个结果发送失败，已继续发送其余结果。"),
-                chain[-1],
-            ])
+            return event.chain_result(
+                [
+                    Comp.Plain(
+                        f"⚠️ 有 {failed_count} 个结果发送失败，已继续发送其余结果。"
+                    ),
+                    chain[-1],
+                ]
+            )
         return event.chain_result([chain[-1]])
 
     async def _send_single_media(self, event, media, task_name, expect=None):
@@ -2807,7 +2937,9 @@ class ImageGenPlugin(Star):
         if kind == "video":
             return event.chain_result([Comp.Video.fromFileSystem(path=path)])
         else:
-            self._remember_last_image(event, path, os.path.basename(path), source=task_name)
+            self._remember_last_image(
+                event, path, os.path.basename(path), source=task_name
+            )
             return event.image_result(path)
 
     async def _media_to_component(
@@ -2827,8 +2959,11 @@ class ImageGenPlugin(Star):
 
         try:
             kind2, path = await download_to_file(
-                value, self._save_dir, stem or self._stem(event), self._timeout,
-                self._proxy
+                value,
+                self._save_dir,
+                stem or self._stem(event),
+                self._timeout,
+                self._proxy,
             )
         except Exception as e:
             return f"❌ 媒体下载失败: {e}"
@@ -2861,3 +2996,4 @@ class ImageGenPlugin(Star):
     async def terminate(self):
         await self._job_manager.terminate()
         await self._cleanup_manager.stop()
+        await close_all_sessions()

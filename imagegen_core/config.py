@@ -51,24 +51,20 @@ def split_values(value) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         return [str(item).strip() for item in value if str(item).strip()]
     return [
-        item.strip()
-        for item in re.split(r"[\s,，;；]+", str(value))
-        if item.strip()
+        item.strip() for item in re.split(r"[\s,，;；]+", str(value)) if item.strip()
     ]
 
 
 def parse_capabilities(value, provider_type: str = "") -> frozenset[Capability]:
-    parsed = {
-        CAPABILITY_ALIASES[item.lower()]
-        for item in split_values(value)
-        if item.lower() in CAPABILITY_ALIASES
-    }
+    items = split_values(value)
+    unknown = [item for item in items if item.lower() not in CAPABILITY_ALIASES]
+    if unknown:
+        raise ValueError(f"未知 capabilities: {', '.join(unknown)}")
+    parsed = {CAPABILITY_ALIASES[item.lower()] for item in items}
     if parsed:
         return frozenset(parsed)
     if provider_type in {"openai_images", "xai", "gemini", "google_gemini"}:
-        return frozenset(
-            {Capability.TEXT_TO_IMAGE, Capability.IMAGE_TO_IMAGE}
-        )
+        return frozenset({Capability.TEXT_TO_IMAGE, Capability.IMAGE_TO_IMAGE})
     return frozenset(Capability)
 
 
@@ -76,17 +72,26 @@ def provider_profiles(config: dict) -> list[ProviderProfile]:
     configured = config.get("providers") or []
     if isinstance(configured, list) and configured:
         profiles = []
+        seen_ids = set()
         for position, raw in enumerate(configured):
             if not isinstance(raw, dict):
                 continue
             provider_type = str(
-                raw.get("provider_type")
-                or raw.get("__template_key")
-                or "openai_compat"
+                raw.get("provider_type") or raw.get("__template_key") or "openai_compat"
             ).strip()
+            protocol = str(raw.get("protocol") or "").strip().lower()
+            if protocol and protocol not in {
+                "openai_compat",
+                "gemini",
+                "generic_json",
+            }:
+                raise ValueError(f"未知 provider protocol: {protocol}")
             provider_id = str(
                 raw.get("provider_id") or raw.get("id") or f"provider-{position + 1}"
             ).strip()
+            if provider_id in seen_ids:
+                raise ValueError(f"providers 中存在重复 provider_id: {provider_id}")
+            seen_ids.add(provider_id)
             profiles.append(
                 ProviderProfile(
                     provider_id=provider_id,
@@ -135,7 +140,11 @@ def _legacy_profiles(config: dict) -> list[ProviderProfile]:
             "openai_images",
             "adapter_image_generation",
             {Capability.TEXT_TO_IMAGE}
-            | ({Capability.IMAGE_TO_IMAGE} if image_strategy == "image_generation" else set()),
+            | (
+                {Capability.IMAGE_TO_IMAGE}
+                if image_strategy == "image_generation"
+                else set()
+            ),
             {"image_api": "generation"},
         ),
         (
@@ -143,29 +152,47 @@ def _legacy_profiles(config: dict) -> list[ProviderProfile]:
             "openai_images",
             "adapter_image_edits",
             ({Capability.IMAGE_TO_IMAGE} if image_strategy == "image_edits" else set())
-            | ({Capability.IMAGE_TO_VIDEO} if image_video_strategy == "image_edits" else set()),
+            | (
+                {Capability.IMAGE_TO_VIDEO}
+                if image_video_strategy == "image_edits"
+                else set()
+            ),
             {"image_api": "edits", "video_api": "edits"},
         ),
         (
             "legacy_openai_chat",
             "openai_compat",
             "adapter_openai_chat",
-            {Capability.TEXT_TO_VIDEO} if text_video_strategy == "openai_chat" else set(),
+            {Capability.TEXT_TO_VIDEO}
+            if text_video_strategy == "openai_chat"
+            else set(),
             {"video_api": "chat"},
         ),
         (
             "legacy_openai_video",
             "openai_compat",
             "adapter_openai_video",
-            ({Capability.TEXT_TO_VIDEO} if text_video_strategy == "openai_video" else set())
-            | ({Capability.IMAGE_TO_VIDEO} if image_video_strategy == "openai_video" else set()),
+            (
+                {Capability.TEXT_TO_VIDEO}
+                if text_video_strategy == "openai_video"
+                else set()
+            )
+            | (
+                {Capability.IMAGE_TO_VIDEO}
+                if image_video_strategy == "openai_video"
+                else set()
+            ),
             {"video_api": "video"},
         ),
     ]
     profiles = []
-    for position, (provider_id, provider_type, key, capabilities, defaults) in enumerate(
-        definitions
-    ):
+    for position, (
+        provider_id,
+        provider_type,
+        key,
+        capabilities,
+        defaults,
+    ) in enumerate(definitions):
         if not capabilities:
             continue
         profile_config = {**defaults, **dict(config.get(key) or {})}

@@ -7,6 +7,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 import main
+import imagegen_core.meme as meme_module
 from imagegen_core.meme import SmartMemeSplitter
 from imagegen_core.models import CallerContext, GenerationResult, MediaArtifact
 from media import extract_all_media
@@ -33,7 +34,9 @@ def _sticker_sheet(
     second = (margin + sticker_width + gap, top, width - margin, bottom)
     for box, color in ((first, color_a), (second, color_b)):
         draw.rounded_rectangle(box, radius=18, fill="black")
-        inner = tuple(value + 7 if index < 2 else value - 7 for index, value in enumerate(box))
+        inner = tuple(
+            value + 7 if index < 2 else value - 7 for index, value in enumerate(box)
+        )
         draw.rounded_rectangle(inner, radius=12, fill=color)
     image.save(path)
     return path
@@ -64,6 +67,51 @@ def test_adaptive_outline_splits_two_stickers_and_makes_background_transparent(
     assert result.method == "adaptive_outline"
     assert len(result.paths) == 2
     with Image.open(result.paths[0]) as first:
+        assert first.mode == "RGBA"
+        assert first.getchannel("A").getextrema()[0] == 0
+
+
+def test_adaptive_mask_uses_pillow_operations_instead_of_python_pixel_iteration(
+    tmp_path, monkeypatch
+):
+    source = _sticker_sheet(tmp_path / "optimized.png")
+
+    def reject_getdata(*args, **kwargs):
+        raise AssertionError(
+            "adaptive mask must not iterate over image pixels in Python"
+        )
+
+    monkeypatch.setattr(Image.Image, "getdata", reject_getdata)
+
+    result = _splitter().split(str(source), str(tmp_path / "optimized_out"))
+
+    assert result.method == "adaptive_outline"
+    assert len(result.paths) == 2
+
+
+def test_large_image_uses_configured_analysis_size_and_keeps_full_resolution_slices(
+    tmp_path, monkeypatch
+):
+    source = _sticker_sheet(tmp_path / "large.png", width=3200, height=1600)
+    analyzed_sizes = []
+    connected_boxes = meme_module._connected_boxes
+
+    def capture_analysis_size(mask, minimum_area):
+        analyzed_sizes.append(mask.size)
+        return connected_boxes(mask, minimum_area)
+
+    monkeypatch.setattr(meme_module, "_connected_boxes", capture_analysis_size)
+
+    result = _splitter(
+        analysis_max_dimension=320,
+        expected_slices=2,
+    ).split(str(source), str(tmp_path / "large_out"))
+
+    assert result.method == "adaptive_outline"
+    assert len(result.paths) == 2
+    assert analyzed_sizes == [(320, 160)]
+    with Image.open(result.paths[0]) as first:
+        assert first.width > 1000
         assert first.mode == "RGBA"
         assert first.getchannel("A").getextrema()[0] == 0
 

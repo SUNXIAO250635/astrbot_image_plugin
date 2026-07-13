@@ -2,6 +2,7 @@
 
 每个适配器返回 dict(响应 JSON)；媒体提取统一交给 media.extract_media。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -9,6 +10,15 @@ import base64
 from typing import Optional
 
 import aiohttp
+
+
+async def get_session():
+    """Import lazily so standalone adapter imports do not initialize core eagerly."""
+    try:
+        from .imagegen_core.http_client import get_session as shared_get_session
+    except ImportError:
+        from imagegen_core.http_client import get_session as shared_get_session
+    return await shared_get_session()
 
 
 class ApiException(Exception):
@@ -51,26 +61,26 @@ def _join(base_url: str, path: str) -> str:
     return f"{base}{path}"
 
 
-async def _get_json(
-    url: str, headers: dict, timeout: int, proxy: str = ""
-) -> dict:
+async def _get_json(url: str, headers: dict, timeout: int, proxy: str = "") -> dict:
     import json as _json
 
     timeout_cfg = aiohttp.ClientTimeout(total=timeout)
     headers = _with_default_headers(headers, Accept="application/json")
     proxy_kw = {"proxy": proxy} if proxy else {}
     try:
-        async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-            async with session.get(url, headers=headers, **proxy_kw) as resp:
-                text = await resp.text(errors="ignore")
-                if resp.status >= 400:
-                    raise ApiException(
-                        f"接口返回 {resp.status}: {text[:300]}", status=resp.status
-                    )
-                try:
-                    return _json.loads(text)
-                except Exception:
-                    raise ApiException(f"响应非 JSON: {text[:300]}")
+        session = await get_session()
+        async with session.get(
+            url, headers=headers, timeout=timeout_cfg, **proxy_kw
+        ) as resp:
+            text = await resp.text(errors="ignore")
+            if resp.status >= 400:
+                raise ApiException(
+                    f"接口返回 {resp.status}: {text[:300]}", status=resp.status
+                )
+            try:
+                return _json.loads(text)
+            except Exception:
+                raise ApiException(f"响应非 JSON: {text[:300]}")
     except ApiException:
         raise
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
@@ -88,19 +98,19 @@ async def _post_json(
     )
     proxy_kw = {"proxy": proxy} if proxy else {}
     try:
-        async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-            async with session.post(
-                url, headers=headers, json=payload, **proxy_kw
-            ) as resp:
-                text = await resp.text(errors="ignore")
-                if resp.status >= 400:
-                    raise ApiException(
-                        f"接口返回 {resp.status}: {text[:300]}", status=resp.status
-                    )
-                try:
-                    return _json.loads(text)
-                except Exception:
-                    raise ApiException(f"响应非 JSON: {text[:300]}")
+        session = await get_session()
+        async with session.post(
+            url, headers=headers, json=payload, timeout=timeout_cfg, **proxy_kw
+        ) as resp:
+            text = await resp.text(errors="ignore")
+            if resp.status >= 400:
+                raise ApiException(
+                    f"接口返回 {resp.status}: {text[:300]}", status=resp.status
+                )
+            try:
+                return _json.loads(text)
+            except Exception:
+                raise ApiException(f"响应非 JSON: {text[:300]}")
     except ApiException:
         raise
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
@@ -127,19 +137,19 @@ async def _post_multipart(
     headers = _with_default_headers(headers, Accept="application/json")
     proxy_kw = {"proxy": proxy} if proxy else {}
     try:
-        async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-            async with session.post(
-                url, headers=headers, data=form, **proxy_kw
-            ) as resp:
-                text = await resp.text(errors="ignore")
-                if resp.status >= 400:
-                    raise ApiException(
-                        f"接口返回 {resp.status}: {text[:300]}", status=resp.status
-                    )
-                try:
-                    return _json.loads(text)
-                except Exception:
-                    raise ApiException(f"响应非 JSON: {text[:300]}")
+        session = await get_session()
+        async with session.post(
+            url, headers=headers, data=form, timeout=timeout_cfg, **proxy_kw
+        ) as resp:
+            text = await resp.text(errors="ignore")
+            if resp.status >= 400:
+                raise ApiException(
+                    f"接口返回 {resp.status}: {text[:300]}", status=resp.status
+                )
+            try:
+                return _json.loads(text)
+            except Exception:
+                raise ApiException(f"响应非 JSON: {text[:300]}")
     except ApiException:
         raise
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
@@ -284,7 +294,10 @@ async def openai_chat(
         for index, (data, filename) in enumerate(images, start=1):
             content.append({"type": "text", "text": f"图 {index} / image {index}"})
             content.append(
-                {"type": "image_url", "image_url": {"url": _image_data_uri(data, filename)}}
+                {
+                    "type": "image_url",
+                    "image_url": {"url": _image_data_uri(data, filename)},
+                }
             )
         messages.append(
             {
@@ -340,13 +353,19 @@ async def submit_openai_video(
             b64 = _b64.b64encode(image_bytes).decode()
             content_type = _image_content_type(image_filename)
             form.add_field("image", f"data:{content_type};base64,{b64}")
-            form.add_field("image_file", image_bytes,
-                           filename=image_filename or "input.png",
-                           content_type=content_type)
+            form.add_field(
+                "image_file",
+                image_bytes,
+                filename=image_filename or "input.png",
+                content_type=content_type,
+            )
         except Exception:
-            form.add_field("image", image_bytes,
-                           filename=image_filename or "input.png",
-                           content_type=_image_content_type(image_filename))
+            form.add_field(
+                "image",
+                image_bytes,
+                filename=image_filename or "input.png",
+                content_type=_image_content_type(image_filename),
+            )
 
         import json as _json
 
@@ -354,26 +373,28 @@ async def submit_openai_video(
         request_headers = _with_default_headers(headers, Accept="application/json")
         proxy_kw = {"proxy": proxy} if proxy else {}
         try:
-            async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-                async with session.post(
-                    submit_url, headers=request_headers, data=form, **proxy_kw
-                ) as resp:
-                    text = await resp.text(errors="ignore")
-                    if resp.status >= 400:
-                        raise ApiException(
-                            f"接口返回 {resp.status}: {text[:300]}",
-                            status=resp.status,
-                        )
-                    try:
-                        submit_resp = _json.loads(text)
-                    except Exception:
-                        raise ApiException(f"响应非 JSON: {text[:300]}")
+            session = await get_session()
+            async with session.post(
+                submit_url,
+                headers=request_headers,
+                data=form,
+                timeout=timeout_cfg,
+                **proxy_kw,
+            ) as resp:
+                text = await resp.text(errors="ignore")
+                if resp.status >= 400:
+                    raise ApiException(
+                        f"接口返回 {resp.status}: {text[:300]}",
+                        status=resp.status,
+                    )
+                try:
+                    submit_resp = _json.loads(text)
+                except Exception:
+                    raise ApiException(f"响应非 JSON: {text[:300]}")
         except ApiException:
             raise
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            raise ApiException(
-                f"视频上传请求失败: {type(e).__name__}: {e}"
-            ) from e
+            raise ApiException(f"视频上传请求失败: {type(e).__name__}: {e}") from e
 
     return submit_resp, _video_task_id(submit_resp)
 
@@ -394,9 +415,7 @@ async def poll_openai_video(
     poll_interval = _safe_float(
         cfg.get("poll_interval"), 3.0, minimum=0.5, maximum=60.0
     )
-    max_wait = _safe_int(
-        cfg.get("poll_max_wait"), 600, minimum=1, maximum=86400
-    )
+    max_wait = _safe_int(cfg.get("poll_max_wait"), 600, minimum=1, maximum=86400)
     deadline_poll = _now() + max_wait
     last = initial_response or {"task_id": task_id}
     while True:

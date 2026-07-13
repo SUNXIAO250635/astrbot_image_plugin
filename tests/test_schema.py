@@ -33,9 +33,7 @@ def test_webui_exposes_image_adapter_and_semantic_planning_fields():
     assert {"base_url", "api_key", "model", "watermark"} <= set(
         _items("adapter_image_generation")
     )
-    assert {"base_url", "api_key", "model"} <= set(
-        _items("adapter_image_edits")
-    )
+    assert {"base_url", "api_key", "model"} <= set(_items("adapter_image_edits"))
 
 
 def test_webui_exposes_access_provider_and_meme_fields():
@@ -71,3 +69,17 @@ def test_schema_defaults_do_not_embed_credentials():
     serialized = json.dumps(SCHEMA, ensure_ascii=False).lower()
     assert "sk-" not in serialized
     assert _items("adapter_prompt_chat")["api_key"]["default"] == ""
+
+
+def test_webui_exposes_background_delivery_reliability_fields():
+    assert {
+        "terminal_retention_seconds",
+        "delivery_retry_count",
+        "delivery_retry_delay_seconds",
+    } <= set(_items("jobs"))
+
+
+def test_intent_schema_default_supports_single_pass_optimization_decision():
+    prompt = _items("generation_options")["intent_plan_system_prompt"]["default"]
+    assert "should_optimize" in prompt
+    assert "count_explicit" in prompt

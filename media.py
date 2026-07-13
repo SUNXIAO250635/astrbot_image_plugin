@@ -1,4 +1,5 @@
 """媒体处理：解析接口返回、下载与保存到 data 目录。"""
+
 from __future__ import annotations
 
 import base64
@@ -8,14 +9,22 @@ from typing import Optional, Tuple
 
 import aiohttp
 
+
+async def get_session():
+    """Import lazily so media remains safe to import before imagegen_core."""
+    try:
+        from .imagegen_core.http_client import get_session as shared_get_session
+    except ImportError:
+        from imagegen_core.http_client import get_session as shared_get_session
+    return await shared_get_session()
+
+
 # 媒体类型
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
 VIDEO_EXTS = (".mp4", ".mov", ".webm", ".mkv", ".avi")
 
 _MEDIA_RE = re.compile(r"https?://[^\s\)\"'<>]+", re.IGNORECASE)
-_BASE64_RE = re.compile(
-    r"data:(image|video)/[\w+.\-]+;base64,([A-Za-z0-9+/=]+)"
-)
+_BASE64_RE = re.compile(r"data:(image|video)/[\w+.\-]+;base64,([A-Za-z0-9+/=]+)")
 
 
 def _ext_from_url(url: str) -> str:
@@ -118,15 +127,16 @@ def extract_all_media(resp_json: dict) -> list[Tuple[str, str]]:
     # 2.5) newapi 渠道视频轮询结果结构：
     #   {"code":"success","data":{"status":"SUCCESS","result_url":"https://...mp4",
     #     "data":{"content":{"video_url":"https://...mp4"}, ...}}}
-    data_obj = resp_json.get("data") if isinstance(resp_json.get("data"), dict) else None
+    data_obj = (
+        resp_json.get("data") if isinstance(resp_json.get("data"), dict) else None
+    )
     if data_obj:
         for key in ("image_urls", "images", "video_urls", "videos"):
             values = data_obj.get(key)
             if isinstance(values, list):
                 for value in values:
                     if isinstance(value, str) and (
-                        value.startswith(("http", "data:"))
-                        or os.path.exists(value)
+                        value.startswith(("http", "data:")) or os.path.exists(value)
                     ):
                         default = "video" if "video" in key else "image"
                         add(_kind_from_key_url(key, value, default), value)
@@ -140,7 +150,9 @@ def extract_all_media(resp_json: dict) -> list[Tuple[str, str]]:
                 return medias
         inner = data_obj.get("data") if isinstance(data_obj.get("data"), dict) else None
         if inner:
-            content = inner.get("content") if isinstance(inner.get("content"), dict) else None
+            content = (
+                inner.get("content") if isinstance(inner.get("content"), dict) else None
+            )
             if content:
                 for key in ("video_url", "image_url", "url"):
                     v = content.get(key)
@@ -268,13 +280,15 @@ async def download_to_file(
     }
     timeout_cfg = aiohttp.ClientTimeout(total=timeout)
     proxy_kw = {"proxy": proxy} if proxy else {}
-    async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-        async with session.get(value, headers=headers, **proxy_kw) as resp:
-            if resp.status != 200:
-                body = await resp.text(errors="ignore")
-                raise RuntimeError(f"下载失败 {resp.status}: {body[:200]}")
-            with open(path, "wb") as f:
-                async for chunk in resp.content.iter_chunked(1 << 16):
-                    f.write(chunk)
+    session = await get_session()
+    async with session.get(
+        value, headers=headers, timeout=timeout_cfg, **proxy_kw
+    ) as resp:
+        if resp.status != 200:
+            body = await resp.text(errors="ignore")
+            raise RuntimeError(f"下载失败 {resp.status}: {body[:200]}")
+        with open(path, "wb") as f:
+            async for chunk in resp.content.iter_chunked(1 << 16):
+                f.write(chunk)
     kind = "video" if ext in VIDEO_EXTS else "image"
     return kind, path

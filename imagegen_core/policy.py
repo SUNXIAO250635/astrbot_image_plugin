@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 import time
 from dataclasses import dataclass
 
 from .models import CallerContext, Capability
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -46,11 +50,17 @@ class PersistentRateLimiter:
             buckets = []
             if caller.sender_id:
                 buckets.append(
-                    (f"user:{caller.sender_id}", _as_int(self.config.get("user_limit"), 0))
+                    (
+                        f"user:{caller.sender_id}",
+                        _as_int(self.config.get("user_limit"), 0),
+                    )
                 )
             if caller.group_id:
                 buckets.append(
-                    (f"group:{caller.group_id}", _as_int(self.config.get("group_limit"), 0))
+                    (
+                        f"group:{caller.group_id}",
+                        _as_int(self.config.get("group_limit"), 0),
+                    )
                 )
             for key, limit in buckets:
                 if limit <= 0:
@@ -139,6 +149,9 @@ class PersistentRateLimiter:
             try:
                 value = await method(self.STATE_KEY, None)
             except Exception:
+                logger.warning(
+                    "Failed to read plugin KV key %s", self.STATE_KEY, exc_info=True
+                )
                 value = None
         if not isinstance(value, dict):
             value = {}
@@ -154,7 +167,9 @@ class PersistentRateLimiter:
             try:
                 await method(self.STATE_KEY, state)
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to write plugin KV key %s", self.STATE_KEY, exc_info=True
+                )
 
 
 def _as_int(value, default=0) -> int:

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import adapters
+from imagegen_core import http_client
 
 
 def test_seedream_false_watermark_is_sent_but_non_seedream_false_is_omitted():
@@ -22,9 +23,7 @@ def test_seedream_false_watermark_is_sent_but_non_seedream_false_is_omitted():
                 {**base, "model": "doubao-seedream-4.5"}, "cat", 30
             )
             seedream_payload = post.await_args.args[2]
-            await adapters.image_generation(
-                {**base, "model": "gpt-image-1"}, "cat", 30
-            )
+            await adapters.image_generation({**base, "model": "gpt-image-1"}, "cat", 30)
             other_payload = post.await_args.args[2]
 
         assert seedream_payload["watermark"] is False
@@ -64,9 +63,7 @@ def test_video_adapter_polls_nested_task_id_until_success():
             result = await adapters.openai_video(config, "animate", timeout=30)
 
         assert post.await_args.args[2]["seconds"] == 60
-        assert get.await_args_list[0].args[0].endswith(
-            "/v1/video/generations/task-123"
-        )
+        assert get.await_args_list[0].args[0].endswith("/v1/video/generations/task-123")
         assert result["data"]["status"] == "SUCCESS"
         assert sleep.await_count == 1
 
@@ -141,22 +138,35 @@ def test_video_adapter_fails_fast_on_permanent_poll_error():
 
 def test_json_transport_timeout_is_wrapped_as_api_exception():
     class TimeoutSession:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
+        def post(self, *args, **kwargs):
             raise asyncio.TimeoutError("simulated timeout")
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
 
     async def scenario():
         with (
-            patch.object(adapters.aiohttp, "ClientSession", TimeoutSession),
+            patch.object(
+                adapters, "get_session", AsyncMock(return_value=TimeoutSession())
+            ),
             pytest.raises(adapters.ApiException, match="POST 请求失败"),
         ):
             await adapters._post_json(
                 "https://api.invalid/v1/test", {}, {"test": True}, 1
             )
+
+    asyncio.run(scenario())
+
+
+def test_http_session_is_reused_in_same_loop_and_rebuilt_after_close():
+    async def scenario():
+        first = await http_client.get_session()
+        second = await http_client.get_session()
+        assert first is second
+
+        await http_client.close_all_sessions()
+        assert first.closed
+
+        rebuilt = await http_client.get_session()
+        assert rebuilt is not first
+        assert not rebuilt.closed
+        await http_client.close_all_sessions()
 
     asyncio.run(scenario())

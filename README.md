@@ -59,9 +59,12 @@ AstrBot `>=4.10.4` 可使用新的 `providers` 列表添加多个供应商实例
 - `image_reference.max_reference_images` 当前请求最多解析的参考图数量
 - `jobs.foreground_wait_seconds` 前台等待时间，超时后自动转后台
 - `jobs.restore_remote_video_tasks` 插件重载后恢复已有视频 task ID 轮询
+- `jobs.delivery_retry_count` / `delivery_retry_delay_seconds` 后台主动发送重试
+- `jobs.terminal_retention_seconds` 完成、部分投递和失败任务的 KV 保留时间
 - `rate_limit.*` 用户/群周期额度、能力 cost 和并发任务租约（限制值 0 表示关闭）
 - `cleanup.*` 受管媒体目录的过期文件清理
 - `meme_splitter.*` 表情包自适应切分、视觉兜底、手动网格和透明背景参数
+- `meme_splitter.analysis_max_dimension` 大图切分分析最大边长，输出仍保持原分辨率
 - `media.save_dir` 保存目录（必须是相对 `data/` 的子目录；绝对路径或 `..` 越界会回退为 `data/imagegen`）
 - `media.multi_media_send_mode` 多图/多视频发送方式，默认逐条发送
 
@@ -112,3 +115,16 @@ AstrBot `>=4.10.4` 可使用新的 `providers` 列表添加多个供应商实例
 - 白名单 ID 分别对应 AstrBot 事件中的 `get_sender_id()` 和 `get_group_id()`。
 - 媒体文件保存在 `data/imagegen/` 下。
 - 视频生成耗时较长，请耐心等待。
+
+## 在线冒烟测试
+
+离线回归不会请求真实供应商。需要验证实际渠道时，通过环境变量提供连接信息，Key 不会写入文件：
+
+```powershell
+$env:ASTRBOT_IMAGEGEN_BASE_URL="https://api.example.com"
+$env:ASTRBOT_IMAGEGEN_API_KEY="<key>"
+$env:ASTRBOT_IMAGEGEN_MODEL="<model>"
+python scripts/live_provider_smoke.py text_to_image "一只红色纸鹤"
+```
+
+也可以设置 `ASTRBOT_IMAGEGEN_LIVE=1` 后运行 `tests/integration/test_live_provider.py`。真实 AstrBot、NapCat、群文件和 WebUI 渲染仍应在目标部署中完成最终验收。

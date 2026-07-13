@@ -468,7 +468,7 @@
       "intent_plan_system_prompt": {
         "description": "多模态生成意图规划系统提示词",
         "type": "text",
-        "default": "你是多模态图片和视频生成请求规划器。根据用户自然语言、是否有参考图和显式模式，选择 capability：text_to_image、image_to_image、text_to_video、image_to_video。识别 preset：头像、海报、壁纸、卡片、手机壁纸、手办化、表情包、风格转换；没有预设则为空。提取生成数量 count，并保留用户全部关键条件。只输出 JSON，不要 Markdown。格式：{\"capability\":\"text_to_image\",\"preset\":\"\",\"count\":1,\"prompt\":\"交给生成模型的需求\",\"reason\":\"简短原因\"}"
+        "default": "你是多模态图片和视频生成请求规划器。根据用户自然语言、是否有参考图和显式模式，选择 capability：text_to_image、image_to_image、text_to_video、image_to_video。识别 preset：头像、海报、壁纸、卡片、手机壁纸、手办化、表情包、风格转换；没有预设则为空。提取生成数量 count；用户明确要求数量时 count_explicit=true，没有明确数量时为 false。同时判断提示词是否确实需要扩写：过短、过泛时 should_optimize=true；用户要求不要优化或提示词已经具体完整时 should_optimize=false。保留用户全部关键条件。只输出 JSON，不要 Markdown。格式：{\"capability\":\"text_to_image\",\"preset\":\"\",\"count\":1,\"count_explicit\":false,\"should_optimize\":true,\"prompt\":\"交给生成模型的需求\",\"reason\":\"简短原因\"}"
       },
       "prompt_plan_system_prompt": {
         "description": "提示词语义规划系统提示词",
@@ -658,6 +658,22 @@
         "description": "插件重载后是否恢复远端视频轮询",
         "type": "bool",
         "default": true
+      },
+      "terminal_retention_seconds": {
+        "description": "终态任务状态保留秒数",
+        "type": "int",
+        "default": 86400,
+        "hint": "已完成、部分投递或失败任务到期后从插件 KV 清理。"
+      },
+      "delivery_retry_count": {
+        "description": "后台主动发送失败重试次数",
+        "type": "int",
+        "default": 2
+      },
+      "delivery_retry_delay_seconds": {
+        "description": "后台发送重试间隔秒数",
+        "type": "float",
+        "default": 1.0
       }
     }
   },
@@ -696,6 +712,12 @@
         "description": "优先使用自适应黑描边切分",
         "type": "bool",
         "default": true
+      },
+      "analysis_max_dimension": {
+        "description": "自适应分析最大边长",
+        "type": "int",
+        "default": 1024,
+        "hint": "大图会先缩小进行描边分析，但最终切片仍保持原始分辨率。"
       },
       "vision_enabled": {
         "description": "自适应和网格失败后使用 Chat 视觉定位",

@@ -4,7 +4,7 @@ import os
 from collections import deque
 from dataclasses import dataclass
 
-from PIL import Image, ImageFilter, ImageStat
+from PIL import Image, ImageChops, ImageFilter, ImageOps, ImageStat
 
 
 @dataclass(slots=True)
@@ -30,9 +30,7 @@ class SmartMemeSplitter:
         if _as_bool(self.config.get("adaptive_enabled", True), True):
             boxes, mask = self._adaptive_boxes(image_path)
             if self._valid_boxes(boxes):
-                paths = self._save_boxes(
-                    image_path, boxes, output_dir, stem, mask=mask
-                )
+                paths = self._save_boxes(image_path, boxes, output_dir, stem, mask=mask)
                 if paths:
                     return SplitResult("adaptive_outline", paths)
 
@@ -56,7 +54,10 @@ class SmartMemeSplitter:
     def _adaptive_boxes(self, image_path: str):
         image = Image.open(image_path).convert("RGBA")
         original_size = image.size
-        scale = min(1.0, 1024 / max(image.size))
+        analysis_max_dimension = max(
+            1, _as_int(self.config.get("analysis_max_dimension"), 1024)
+        )
+        scale = min(1.0, analysis_max_dimension / max(image.size))
         if scale < 1:
             image = image.resize(
                 (max(1, int(image.width * scale)), max(1, int(image.height * scale))),
@@ -67,30 +68,42 @@ class SmartMemeSplitter:
         outline = max(0, min(255, _as_int(self.config.get("outline_threshold"), 90)))
         alpha_values = image.getchannel("A")
         has_transparency = ImageStat.Stat(alpha_values).extrema[0][0] < 245
-        pixels = list(image.getdata())
-        mask_values = []
-        for red, green, blue, alpha in pixels:
-            distance = max(
-                abs(red - background[0]),
-                abs(green - background[1]),
-                abs(blue - background[2]),
+        red, green, blue, _ = image.split()
+        background_image = Image.new("RGB", image.size, background)
+        difference = ImageChops.difference(image.convert("RGB"), background_image)
+        difference_red, difference_green, difference_blue = difference.split()
+        maximum_difference = ImageChops.lighter(
+            ImageChops.lighter(difference_red, difference_green),
+            difference_blue,
+        )
+        distant_from_background = maximum_difference.point(
+            lambda value: 255 if value >= tolerance else 0
+        )
+        maximum_color = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+        dark_outline = maximum_color.point(lambda value: 255 if value <= outline else 0)
+        foreground = ImageChops.lighter(distant_from_background, dark_outline)
+        if has_transparency:
+            partially_transparent = ImageOps.invert(alpha_values).point(
+                lambda value: 255 if value > 5 else 0
             )
-            foreground = alpha > 12 and (
-                (has_transparency and alpha < 250)
-                or distance >= tolerance
-                or max(red, green, blue) <= outline
-            )
-            mask_values.append(255 if foreground else 0)
-        mask = Image.new("L", image.size)
-        mask.putdata(mask_values)
+            foreground = ImageChops.lighter(foreground, partially_transparent)
+        transparent_or_near = alpha_values.point(
+            lambda value: 255 if value <= 12 else 0
+        )
+        mask = ImageChops.darker(foreground, ImageOps.invert(transparent_or_near))
         dilation = _odd(_as_int(self.config.get("connect_radius"), 9), 3, 31)
         mask = mask.filter(ImageFilter.MaxFilter(dilation))
         mask = mask.filter(ImageFilter.MinFilter(_odd(max(3, dilation // 2), 3, 15)))
         boxes = _connected_boxes(
             mask,
-            max(16, int(image.width * image.height * _as_float(
-                self.config.get("min_area_ratio"), 0.003
-            ))),
+            max(
+                16,
+                int(
+                    image.width
+                    * image.height
+                    * _as_float(self.config.get("min_area_ratio"), 0.003)
+                ),
+            ),
         )
         padding = max(0, _as_int(self.config.get("padding"), 12))
         scaled_boxes = []
@@ -196,9 +209,7 @@ class SmartMemeSplitter:
         mask: Image.Image | None = None,
     ) -> list[str]:
         paths = []
-        transparent = _as_bool(
-            self.config.get("transparent_background", True), True
-        )
+        transparent = _as_bool(self.config.get("transparent_background", True), True)
         with Image.open(image_path) as source:
             image = source.convert("RGBA")
             for index, box in enumerate(boxes, start=1):
@@ -241,7 +252,9 @@ def _connected_boxes(mask: Image.Image, minimum_area: int):
                 left, right = min(left, current_x), max(right, current_x)
                 top, bottom = min(top, current_y), max(bottom, current_y)
                 for next_y in range(max(0, current_y - 1), min(height, current_y + 2)):
-                    for next_x in range(max(0, current_x - 1), min(width, current_x + 2)):
+                    for next_x in range(
+                        max(0, current_x - 1), min(width, current_x + 2)
+                    ):
                         next_offset = next_y * width + next_x
                         if visited[next_offset] or pixels[next_x, next_y] == 0:
                             continue
@@ -289,7 +302,10 @@ def _corner_background(image: Image.Image):
         image.getpixel((0, image.height - 1)),
         image.getpixel((image.width - 1, image.height - 1)),
     ]
-    return tuple(sorted(point[channel] for point in points)[len(points) // 2] for channel in range(3))
+    return tuple(
+        sorted(point[channel] for point in points)[len(points) // 2]
+        for channel in range(3)
+    )
 
 
 def _odd(value: int, minimum: int, maximum: int):

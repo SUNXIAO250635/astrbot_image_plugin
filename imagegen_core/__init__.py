@@ -14,6 +14,7 @@ from .models import (
 from .service import GenerationService
 from .intent import IntentPlanner
 from .jobs import JobManager
+from .legacy import LegacyAdapterRunner
 from .cleanup import CleanupManager
 from .policy import PersistentRateLimiter, RateLimitExceeded
 from .meme import SmartMemeSplitter
@@ -30,6 +31,7 @@ __all__ = [
     "GenerationService",
     "IntentPlanner",
     "JobManager",
+    "LegacyAdapterRunner",
     "MediaArtifact",
     "ProviderFailure",
     "PersistentRateLimiter",

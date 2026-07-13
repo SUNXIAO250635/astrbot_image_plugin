@@ -13,6 +13,7 @@ class IntentPlan:
     preset: str = ""
     count: int = 1
     count_explicit: bool = False
+    should_optimize: bool | None = None
     reason: str = "local"
 
 
@@ -31,7 +32,9 @@ class IntentPlanner:
         text = (prompt or "").strip()
         selected_preset = get_preset(preset) or detect_preset(text)
         if capability is None:
-            wants_video = any(token in text for token in ("视频", "动起来", "动画", "运镜"))
+            wants_video = any(
+                token in text for token in ("视频", "动起来", "动画", "运镜")
+            )
             edit_markers = (
                 "改",
                 "替换",
@@ -49,7 +52,8 @@ class IntentPlanner:
                     else Capability.TEXT_TO_VIDEO
                 )
             elif has_reference and (
-                selected_preset and selected_preset.reference_preferred
+                selected_preset
+                and selected_preset.reference_preferred
                 or any(marker in text for marker in edit_markers)
             ):
                 capability = Capability.IMAGE_TO_IMAGE
@@ -67,22 +71,34 @@ class IntentPlanner:
         if not isinstance(value, dict):
             return fallback
         try:
-            capability = Capability(str(value.get("capability") or fallback.capability.value))
+            capability = Capability(
+                str(value.get("capability") or fallback.capability.value)
+            )
         except ValueError:
             capability = fallback.capability
         preset = get_preset(str(value.get("preset") or ""))
         prompt = str(value.get("prompt") or fallback.prompt).strip() or fallback.prompt
         raw_count = value.get("count", value.get("image_count"))
         try:
-            count = max(1, min(10, int(raw_count))) if raw_count is not None else fallback.count
+            count = (
+                max(1, min(10, int(raw_count)))
+                if raw_count is not None
+                else fallback.count
+            )
         except (TypeError, ValueError):
             count = fallback.count
+        explicit_count = _optional_bool(value.get("count_explicit"))
+        if explicit_count is None:
+            explicit_count = fallback.count_explicit or (
+                raw_count is not None and count != 1
+            )
         return IntentPlan(
             capability=capability,
             prompt=prompt,
             preset=preset.key if preset else fallback.preset,
             count=count,
-            count_explicit=raw_count is not None or fallback.count_explicit,
+            count_explicit=explicit_count,
+            should_optimize=_optional_bool(value.get("should_optimize")),
             reason=str(value.get("reason") or "ai"),
         )
 
@@ -103,3 +119,18 @@ def _mode_capability(mode: str) -> Capability | None:
         "图生视频": Capability.IMAGE_TO_VIDEO,
     }
     return aliases.get(mode)
+
+
+def _optional_bool(value) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "是", "需要"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "否", "不需要"}:
+        return False
+    return None
